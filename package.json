@@ -1,0 +1,34 @@
+{
+  "name": "kimi-context-optimizer",
+  "version": "1.0.0",
+  "description": "Kimi Code context optimization: real token usage from wire.jsonl, self-calibrating estimates, read-cache, budget guardrails, and prompt coaching",
+  "type": "module",
+  "main": "src/tracker.js",
+  "bin": {
+    "kco-tracker": "./src/tracker.js",
+    "kco-report": "./src/report.js"
+  },
+  "files": [
+    "src/",
+    "agents/",
+    "skills/",
+    "hooks/",
+    "docs/",
+    ".kimi-plugin/"
+  ],
+  "keywords": [
+    "kimi-code",
+    "plugin",
+    "context-optimization",
+    "token-tracking",
+    "hooks"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/",
+    "sync-version": "node scripts/sync-version.js"
+  },
+  "license": "MIT"
+}

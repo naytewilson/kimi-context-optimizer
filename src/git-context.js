@@ -1,0 +1,219 @@
+#!/usr/bin/env node
+
+/**
+ * Git-Aware Context Suggester v2.1 (KCO — Kimi Code port)
+ *
+ * Analyzes git status/diff to suggest which files Kimi should read
+ * for the current task. Fixed: uses project-segmented patterns.
+ *
+ * Used by the /kco-git skill.
+ */
+
+import { execSync } from 'child_process';
+import { existsSync } from 'fs';
+import { join, dirname, extname } from 'path';
+import { PATTERNS_FILE, loadJSON, isMainModule } from './utils.js';
+
+function run(cmd, cwd) {
+  try {
+    return execSync(cmd, { cwd, encoding: 'utf-8', timeout: 5000 }).trimEnd();
+  } catch {
+    return '';
+  }
+}
+
+function isGitRepo(cwd) {
+  return run('git rev-parse --is-inside-work-tree', cwd) === 'true';
+}
+
+function getGitContext(cwd) {
+  if (!isGitRepo(cwd)) return null;
+
+  const branch = run('git branch --show-current', cwd);
+  const status = run('git status --porcelain', cwd);
+  const recentCommits = run('git log --oneline -5 2>/dev/null', cwd);
+  const diffFiles = run('git diff --name-only HEAD 2>/dev/null', cwd);
+  const stagedFiles = run('git diff --cached --name-only 2>/dev/null', cwd);
+  const untrackedFiles = run('git ls-files --others --exclude-standard 2>/dev/null', cwd);
+
+  const modifiedFiles = status.split('\n')
+    .filter(l => l.trim())
+    .map(l => ({
+      status: l.substring(0, 2).trim(),
+      file: l.substring(3).trim()
+    }));
+
+  const relatedFiles = new Set();
+  for (const { file } of modifiedFiles) {
+    const ext = extname(file);
+    const dir = dirname(file);
+    const base = file.replace(ext, '');
+
+    relatedFiles.add(`${base}.test${ext}`);
+    relatedFiles.add(`${base}.spec${ext}`);
+    relatedFiles.add(`${dir}/__tests__/${file.split('/').pop()}`);
+
+    const configs = ['package.json', 'tsconfig.json', '.eslintrc', 'Makefile', 'CMakeLists.txt'];
+    for (const cfg of configs) {
+      const cfgPath = join(dir, cfg);
+      if (existsSync(join(cwd, cfgPath))) {
+        relatedFiles.add(cfgPath);
+      }
+    }
+  }
+
+  return {
+    branch,
+    modifiedFiles,
+    recentCommits: recentCommits.split('\n').filter(Boolean),
+    diffFiles: diffFiles.split('\n').filter(Boolean),
+    stagedFiles: stagedFiles.split('\n').filter(Boolean),
+    untrackedFiles: untrackedFiles.split('\n').filter(Boolean),
+    relatedFiles: [...relatedFiles].filter(f => existsSync(join(cwd, f)))
+  };
+}
+
+function getGitCoChanges(cwd, targetFiles) {
+  if (!isGitRepo(cwd) || targetFiles.length === 0) return {};
+
+  try {
+    const log = run('git log --name-only --pretty=format:"---COMMIT---" -50 2>/dev/null', cwd);
+    if (!log) return {};
+
+    const commits = log.split('---COMMIT---')
+      .filter(Boolean)
+      .map(block => block.split('\n').map(l => l.trim()).filter(Boolean));
+
+    const coChanges = {};
+    for (const target of targetFiles) {
+      const relTarget = target.replace(cwd + '/', '');
+      const companions = {};
+
+      for (const commitFiles of commits) {
+        if (commitFiles.includes(relTarget)) {
+          for (const f of commitFiles) {
+            if (f !== relTarget && !f.startsWith('.')) {
+              companions[f] = (companions[f] || 0) + 1;
+            }
+          }
+        }
+      }
+
+      const frequent = Object.entries(companions)
+        .filter(([, count]) => count >= 2)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+
+      if (frequent.length > 0) {
+        coChanges[relTarget] = frequent.map(([file, count]) => ({ file, coCommits: count }));
+      }
+    }
+
+    return coChanges;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Fixed: now correctly reads project-segmented patterns
+ * instead of the old flat format.
+ */
+function getHistoricalSuggestions(cwd) {
+  const patterns = loadJSON(PATTERNS_FILE);
+  if (!patterns) return [];
+
+  const suggestions = [];
+
+  // Search in project-segmented patterns
+  const projects = patterns.projects || {};
+  for (const [projectRoot, projData] of Object.entries(projects)) {
+    // Match current cwd to project or use _global
+    if (projectRoot !== '_global' && !cwd.startsWith(projectRoot)) continue;
+
+    for (const [filePath, data] of Object.entries(projData.fileFrequency || {})) {
+      if (filePath.startsWith(cwd) && data.usefulness >= 2 && data.totalEdits > 0) {
+        suggestions.push({
+          file: filePath.replace(cwd + '/', ''),
+          score: data.usefulness,
+          reason: `edited ${data.totalEdits}x across ${data.sessions} sessions`
+        });
+      }
+    }
+  }
+
+  return suggestions.sort((a, b) => b.score - a.score).slice(0, 5);
+}
+
+async function main() {
+  let input = '';
+  for await (const chunk of process.stdin) {
+    input += chunk;
+  }
+
+  let cwd = process.cwd();
+  if (input.trim()) {
+    try {
+      const event = JSON.parse(input);
+      cwd = event.cwd || cwd;
+    } catch {
+      // use default cwd
+    }
+  }
+
+  const gitContext = getGitContext(cwd);
+  const historical = getHistoricalSuggestions(cwd);
+
+  const modifiedFilePaths = gitContext ?
+    gitContext.modifiedFiles.map(f => join(cwd, f.file)) : [];
+  const coChanges = getGitCoChanges(cwd, modifiedFilePaths);
+
+  const result = {
+    cwd,
+    isGitRepo: !!gitContext,
+    git: gitContext,
+    gitCoChanges: coChanges,
+    historicalSuggestions: historical,
+    summary: ''
+  };
+
+  if (gitContext) {
+    const parts = [];
+
+    if (gitContext.branch) {
+      parts.push(`Branch: ${gitContext.branch}`);
+    }
+
+    if (gitContext.modifiedFiles.length > 0) {
+      parts.push(`${gitContext.modifiedFiles.length} modified file(s): ${gitContext.modifiedFiles.map(f => f.file).join(', ')}`);
+    }
+
+    if (gitContext.stagedFiles.length > 0) {
+      parts.push(`${gitContext.stagedFiles.length} staged for commit`);
+    }
+
+    if (gitContext.relatedFiles.length > 0) {
+      parts.push(`Related files found: ${gitContext.relatedFiles.join(', ')}`);
+    }
+
+    if (Object.keys(coChanges).length > 0) {
+      const coFiles = new Set();
+      for (const companions of Object.values(coChanges)) {
+        for (const c of companions.slice(0, 2)) coFiles.add(c.file);
+      }
+      if (coFiles.size > 0) {
+        parts.push(`Git co-changes: ${[...coFiles].slice(0, 5).join(', ')}`);
+      }
+    }
+
+    if (historical.length > 0) {
+      parts.push(`Frequently useful: ${historical.map(h => h.file).join(', ')}`);
+    }
+
+    result.summary = parts.join(' | ');
+  }
+
+  console.log(JSON.stringify(result, null, 2));
+}
+
+if (isMainModule(import.meta.url)) main().catch(() => process.exit(0));

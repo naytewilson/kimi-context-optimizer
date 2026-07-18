@@ -1,0 +1,94 @@
+{
+  "name": "kimi-context-optimizer",
+  "version": "1.0.0",
+  "description": "Track, cache, and optimize your Kimi Code context — stop burning tokens on redundant reads",
+  "keywords": ["context", "tokens", "optimization", "tracking"],
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Kimi Context Optimizer",
+    "shortDescription": "Stop burning tokens on redundant reads and weak prompts"
+  },
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Read",
+      "command": "node ./src/read-cache.js",
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": "Read",
+      "command": "node ./src/context-shield.js",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "node ./src/prompt-coach.js",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Edit|Write",
+      "command": "node ./src/read-cache.js",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash|Read|Edit|Write|Glob|Grep|Agent|mcp__.*",
+      "command": "node ./src/tracker.js",
+      "timeout": 15
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "Bash|Read|Edit|Write|Glob|Grep|Agent|mcp__.*",
+      "command": "node ./src/budget.js",
+      "timeout": 15
+    },
+    {
+      "event": "PostToolUseFailure",
+      "command": "node ./src/tracker.js",
+      "timeout": 10
+    },
+    {
+      "event": "SubagentStart",
+      "command": "node ./src/tracker.js",
+      "timeout": 10
+    },
+    {
+      "event": "SubagentStop",
+      "command": "node ./src/tracker.js",
+      "timeout": 10
+    },
+    {
+      "event": "PreCompact",
+      "command": "node ./src/read-cache.js",
+      "timeout": 10
+    },
+    {
+      "event": "PreCompact",
+      "command": "node ./src/tracker.js",
+      "timeout": 10
+    },
+    {
+      "event": "PostCompact",
+      "command": "node ./src/read-cache.js",
+      "timeout": 10
+    },
+    {
+      "event": "SessionStart",
+      "command": "node ./src/tracker.js",
+      "timeout": 15
+    },
+    {
+      "event": "SessionEnd",
+      "command": "node ./src/tracker.js",
+      "timeout": 30
+    },
+    {
+      "event": "SessionEnd",
+      "command": "node ./src/dashboard.js summary",
+      "timeout": 30
+    }
+  ]
+}
