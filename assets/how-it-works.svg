@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 190" fill="none">
+  <defs>
+    <linearGradient id="wbg" x1="0" y1="0" x2="700" y2="190">
+      <stop offset="0%" stop-color="#0a0e14"/>
+      <stop offset="100%" stop-color="#0f1620"/>
+    </linearGradient>
+  </defs>
+  <rect width="700" height="190" rx="10" fill="url(#wbg)"/>
+  <rect x="1" y="1" width="698" height="188" rx="9" fill="none" stroke="#1c2733" stroke-width="1"/>
+
+  <!-- Step 1 -->
+  <rect x="20" y="24" width="190" height="120" rx="8" fill="#0f1620" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="115" y="58" font-family="SF Mono, monospace" font-size="24" font-weight="700" fill="#22d3ee" text-anchor="middle">1</text>
+  <text x="115" y="82" font-family="SF Mono, monospace" font-size="12" font-weight="700" fill="#e6edf3" text-anchor="middle">HOOK INTERCEPTS</text>
+  <text x="115" y="102" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">PreToolUse · Read</text>
+  <text x="115" y="115" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">UserPromptSubmit</text>
+  <text x="115" y="128" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">fires before the cost</text>
+
+  <!-- Arrow 1 -->
+  <line x1="216" y1="84" x2="246" y2="84" stroke="#2a3746" stroke-width="2"/>
+  <polygon points="246,79 256,84 246,89" fill="#2a3746"/>
+
+  <!-- Step 2 -->
+  <rect x="260" y="24" width="190" height="120" rx="8" fill="#0f1620" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="355" y="58" font-family="SF Mono, monospace" font-size="24" font-weight="700" fill="#a78bfa" text-anchor="middle">2</text>
+  <text x="355" y="82" font-family="SF Mono, monospace" font-size="12" font-weight="700" fill="#e6edf3" text-anchor="middle">CACHE + TRACK</text>
+  <text x="355" y="102" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">digest on repeat reads</text>
+  <text x="355" y="115" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">wire.jsonl ground truth</text>
+  <text x="355" y="128" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">every call recorded</text>
+
+  <!-- Arrow 2 -->
+  <line x1="456" y1="84" x2="486" y2="84" stroke="#2a3746" stroke-width="2"/>
+  <polygon points="486,79 496,84 486,89" fill="#2a3746"/>
+
+  <!-- Step 3 -->
+  <rect x="500" y="24" width="180" height="120" rx="8" fill="#0f1620" stroke="#34d399" stroke-width="1.5"/>
+  <text x="590" y="58" font-family="SF Mono, monospace" font-size="24" font-weight="700" fill="#34d399" text-anchor="middle">3</text>
+  <text x="590" y="82" font-family="SF Mono, monospace" font-size="12" font-weight="700" fill="#e6edf3" text-anchor="middle">SAVE</text>
+  <text x="590" y="102" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">63% fewer tokens</text>
+  <text x="590" y="115" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">budget guard 50–95%</text>
+  <text x="590" y="128" font-family="SF Mono, monospace" font-size="9" fill="#8b98a8" text-anchor="middle">coached prompts</text>
+
+  <!-- Tagline -->
+  <text x="350" y="172" font-family="SF Mono, monospace" font-size="12" fill="#22d3ee" text-anchor="middle">Zero config · Local only · Real numbers from wire.jsonl</text>
+</svg>

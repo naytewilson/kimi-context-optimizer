@@ -1,10 +1,35 @@
-# Kimi Context Optimizer (KCO)
+<p align="center">
+  <img src="assets/logo.svg" alt="kimi-context-optimizer" width="600"/>
+</p>
 
-**Stop burning context on redundant reads and weak prompts. Built for Kimi Code.**
+<p align="center">
+  <strong>Stop burning context on redundant reads and weak prompts. Built for Kimi Code.</strong><br/>
+  <sub>Real per-step context size from wire.jsonl — window-aware for K2.7 (256K) and K3 (1M), zero config.</sub>
+</p>
+
+<p align="center">
+  <a href="#install"><img src="https://img.shields.io/badge/kimi--code-plugin-22d3ee?style=flat-square" alt="Kimi Code Plugin"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License"/></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen?style=flat-square" alt="Node 18+"/>
+  <img src="https://img.shields.io/badge/zero%20config-yes-blueviolet?style=flat-square" alt="Zero Config"/>
+  <img src="https://img.shields.io/badge/telemetry-none-critical?style=flat-square" alt="No Telemetry"/>
+</p>
+
+<p align="center">
+  <a href="https://&lt;user&gt;.github.io/kimi-context-optimizer/"><strong>Landing page</strong></a>
+</p>
+
+---
 
 KCO is a Kimi Code plugin that tracks how your sessions actually spend context,
 blocks redundant file reads before they happen, guards your token budget with
 **real** usage numbers, and coaches your prompts — all locally, no telemetry.
+
+## See it in action
+
+<p align="center">
+  <img src="assets/terminal-demo.svg" alt="A Kimi Code session where read-cache blocks a redundant read and KCO reports 60,055 tokens saved" width="700"/>
+</p>
 
 ## The problem
 

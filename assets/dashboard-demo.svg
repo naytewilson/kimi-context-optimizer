@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 440" fill="none">
+  <defs>
+    <linearGradient id="dbg" x1="0" y1="0" x2="700" y2="440">
+      <stop offset="0%" stop-color="#0a0e14"/>
+      <stop offset="100%" stop-color="#0f1620"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+  <rect width="700" height="440" rx="10" fill="url(#dbg)"/>
+  <rect x="1" y="1" width="698" height="438" rx="9" fill="none" stroke="#1c2733" stroke-width="1"/>
+
+  <!-- Window chrome -->
+  <rect x="0" y="0" width="700" height="34" rx="10" fill="#131b26"/>
+  <rect x="0" y="22" width="700" height="12" fill="#131b26"/>
+  <circle cx="22" cy="17" r="6" fill="#f87171"/>
+  <circle cx="40" cy="17" r="6" fill="#fbbf24"/>
+  <circle cx="58" cy="17" r="6" fill="#34d399"/>
+  <text x="350" y="21" font-family="SF Mono, monospace" font-size="12" fill="#8b98a8" text-anchor="middle">/kco — Control Center</text>
+
+  <!-- Title -->
+  <text x="30" y="66" font-family="SF Mono, monospace" font-size="16" font-weight="700" fill="#e6edf3">KCO — CONTROL CENTER</text>
+  <text x="670" y="66" font-family="SF Mono, monospace" font-size="11" fill="#5b6774" text-anchor="end">session #47 · k3 · 1M window</text>
+
+  <!-- Metric cards -->
+  <rect x="25" y="82" width="155" height="70" rx="6" fill="#0f1620" stroke="#1c2733" stroke-width="1"/>
+  <text x="102" y="104" font-family="SF Mono, monospace" font-size="10" fill="#8b98a8" text-anchor="middle">CONTEXT USED</text>
+  <text x="102" y="134" font-family="SF Mono, monospace" font-size="26" font-weight="700" fill="#22d3ee" text-anchor="middle">41%</text>
+
+  <rect x="190" y="82" width="155" height="70" rx="6" fill="#0f1620" stroke="#1c2733" stroke-width="1"/>
+  <text x="267" y="104" font-family="SF Mono, monospace" font-size="10" fill="#8b98a8" text-anchor="middle">CACHE HIT RATE</text>
+  <text x="267" y="134" font-family="SF Mono, monospace" font-size="26" font-weight="700" fill="#a78bfa" text-anchor="middle">87%</text>
+
+  <rect x="355" y="82" width="155" height="70" rx="6" fill="#0f1620" stroke="#1c2733" stroke-width="1"/>
+  <text x="432" y="104" font-family="SF Mono, monospace" font-size="10" fill="#8b98a8" text-anchor="middle">BLOCKED READS</text>
+  <text x="432" y="134" font-family="SF Mono, monospace" font-size="26" font-weight="700" fill="#fbbf24" text-anchor="middle">12</text>
+
+  <rect x="520" y="82" width="155" height="70" rx="6" fill="#0f1620" stroke="#1c2733" stroke-width="1"/>
+  <text x="597" y="104" font-family="SF Mono, monospace" font-size="10" fill="#8b98a8" text-anchor="middle">TOKENS SAVED</text>
+  <text x="597" y="134" font-family="SF Mono, monospace" font-size="26" font-weight="700" fill="#34d399" text-anchor="middle">60,055</text>
+
+  <!-- Context window bar -->
+  <text x="30" y="182" font-family="SF Mono, monospace" font-size="12" font-weight="700" fill="#8b98a8">CONTEXT WINDOW — REAL % FROM wire.jsonl</text>
+  <rect x="40" y="194" width="620" height="16" rx="8" fill="#16202c"/>
+  <rect x="40" y="194" width="254" height="16" rx="8" fill="url(#bar)"/>
+  <line x1="350" y1="190" x2="350" y2="214" stroke="#5b6774" stroke-width="1"/>
+  <line x1="474" y1="190" x2="474" y2="214" stroke="#5b6774" stroke-width="1"/>
+  <line x1="567" y1="190" x2="567" y2="214" stroke="#fbbf24" stroke-width="1"/>
+  <line x1="629" y1="190" x2="629" y2="214" stroke="#f87171" stroke-width="1"/>
+  <text x="350" y="228" font-family="SF Mono, monospace" font-size="9" fill="#5b6774" text-anchor="middle">50</text>
+  <text x="474" y="228" font-family="SF Mono, monospace" font-size="9" fill="#5b6774" text-anchor="middle">70</text>
+  <text x="567" y="228" font-family="SF Mono, monospace" font-size="9" fill="#fbbf24" text-anchor="middle">85</text>
+  <text x="629" y="228" font-family="SF Mono, monospace" font-size="9" fill="#f87171" text-anchor="middle">95</text>
+  <text x="282" y="207" font-family="SF Mono, monospace" font-size="10" font-weight="700" fill="#0a0e14" text-anchor="middle">41%</text>
+
+  <!-- Savings chart -->
+  <text x="30" y="262" font-family="SF Mono, monospace" font-size="12" font-weight="700" fill="#8b98a8">TOKENS SAVED PER SESSION (LAST 10)</text>
+  <line x1="40" y1="380" x2="660" y2="380" stroke="#1c2733" stroke-width="1"/>
+  <rect x="60"  y="340" width="40" height="40" rx="2" fill="#34d399" opacity="0.45"/>
+  <rect x="122" y="330" width="40" height="50" rx="2" fill="#34d399" opacity="0.5"/>
+  <rect x="184" y="318" width="40" height="62" rx="2" fill="#34d399" opacity="0.55"/>
+  <rect x="246" y="336" width="40" height="44" rx="2" fill="#34d399" opacity="0.5"/>
+  <rect x="308" y="306" width="40" height="74" rx="2" fill="#34d399" opacity="0.65"/>
+  <rect x="370" y="312" width="40" height="68" rx="2" fill="#34d399" opacity="0.6"/>
+  <rect x="432" y="296" width="40" height="84" rx="2" fill="#34d399" opacity="0.75"/>
+  <rect x="494" y="288" width="40" height="92" rx="2" fill="#34d399" opacity="0.8"/>
+  <rect x="556" y="300" width="40" height="80" rx="2" fill="#34d399" opacity="0.7"/>
+  <rect x="618" y="280" width="40" height="100" rx="2" fill="#22d3ee" opacity="0.9"/>
+  <text x="660" y="272" font-family="SF Mono, monospace" font-size="11" fill="#34d399" text-anchor="end">↑ 63% avg savings</text>
+
+  <!-- Footer -->
+  <text x="30" y="418" font-family="SF Mono, monospace" font-size="10" fill="#5b6774">kimi-context-optimizer · /kco-export html for full dashboard · all data local</text>
+  <text x="670" y="418" font-family="SF Mono, monospace" font-size="10" fill="#5b6774" text-anchor="end">no telemetry</text>
+</svg>
