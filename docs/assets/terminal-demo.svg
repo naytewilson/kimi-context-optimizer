@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 400" fill="none">
+  <defs>
+    <linearGradient id="tbg" x1="0" y1="0" x2="700" y2="400">
+      <stop offset="0%" stop-color="#0a0e14"/>
+      <stop offset="100%" stop-color="#0f1620"/>
+    </linearGradient>
+  </defs>
+  <rect width="700" height="400" rx="10" fill="url(#tbg)"/>
+  <rect x="1" y="1" width="698" height="398" rx="9" fill="none" stroke="#1c2733" stroke-width="1"/>
+
+  <!-- Window chrome -->
+  <rect x="0" y="0" width="700" height="34" rx="10" fill="#131b26"/>
+  <rect x="0" y="22" width="700" height="12" fill="#131b26"/>
+  <circle cx="22" cy="17" r="6" fill="#f87171"/>
+  <circle cx="40" cy="17" r="6" fill="#fbbf24"/>
+  <circle cx="58" cy="17" r="6" fill="#34d399"/>
+  <text x="350" y="21" font-family="SF Mono, monospace" font-size="12" fill="#8b98a8" text-anchor="middle">kimi — with kimi-context-optimizer</text>
+
+  <!-- Session -->
+  <text x="28" y="64" font-family="SF Mono, monospace" font-size="13" fill="#8b98a8">$ kimi</text>
+  <text x="28" y="90" font-family="SF Mono, monospace" font-size="13" fill="#e6edf3">❯ fix the flaky test in src/tracker.js</text>
+
+  <text x="28" y="118" font-family="SF Mono, monospace" font-size="13" fill="#8b98a8">→ Read src/tracker.js — 412 lines, ~3,900 tokens</text>
+  <text x="28" y="142" font-family="SF Mono, monospace" font-size="13" fill="#8b98a8">→ Read src/tracker.js</text>
+
+  <!-- read-cache block -->
+  <text x="28" y="170" font-family="SF Mono, monospace" font-size="13" fill="#f87171">⛔ [read-cache] Already loaded tracker.js this session</text>
+  <text x="28" y="190" font-family="SF Mono, monospace" font-size="13" fill="#f87171">   (412 lines, ~3,900 tokens). File unchanged.</text>
+
+  <!-- File map -->
+  <text x="28" y="216" font-family="SF Mono, monospace" font-size="13" fill="#22d3ee">📋 File map (412 lines):</text>
+  <text x="28" y="236" font-family="SF Mono, monospace" font-size="12" fill="#8b98a8">     1: import { saveCache } from './cache.js'</text>
+  <text x="28" y="254" font-family="SF Mono, monospace" font-size="12" fill="#8b98a8">    42: export function recordCall(call)</text>
+  <text x="28" y="272" font-family="SF Mono, monospace" font-size="12" fill="#8b98a8">   118: function estimateTokens(lines, ext)</text>
+  <text x="28" y="290" font-family="SF Mono, monospace" font-size="12" fill="#8b98a8">   204: export function buildReport(session)</text>
+  <text x="28" y="308" font-family="SF Mono, monospace" font-size="12" fill="#5b6774">   … 8 more landmarks</text>
+
+  <!-- Budget + summary -->
+  <text x="28" y="336" font-family="SF Mono, monospace" font-size="13" fill="#a78bfa">[budget] context 41% of 1M window · cache hit 87%</text>
+  <text x="28" y="366" font-family="SF Mono, monospace" font-size="14" font-weight="700" fill="#34d399">★ KCO saved 60,055 tokens — 63% of what the context</text>
+  <text x="28" y="386" font-family="SF Mono, monospace" font-size="14" font-weight="700" fill="#34d399">  would have held</text>
+</svg>

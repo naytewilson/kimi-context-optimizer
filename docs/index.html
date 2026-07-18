@@ -8,8 +8,8 @@
 <meta property="og:title" content="Kimi Context Optimizer — stop burning context">
 <meta property="og:description" content="Read Cache + Budget Guard + Prompt Coach for Kimi Code. Real per-step context size from wire.jsonl. 63% savings, zero dependencies, no telemetry.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://<user>.github.io/kimi-context-optimizer/">
-<meta property="og:image" content="https://<user>.github.io/kimi-context-optimizer/terminal-demo.svg">
+<meta property="og:url" content="https://egorfedorov.github.io/kimi-context-optimizer/">
+<meta property="og:image" content="https://egorfedorov.github.io/kimi-context-optimizer/assets/terminal-demo.svg">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='none' stroke='%2316202c' stroke-width='10'/><path d='M50 10 A40 40 0 1 1 20.8 77.4' fill='none' stroke='%2322d3ee' stroke-width='10' stroke-linecap='round'/><path d='M55 30 L44 54 L52 54 L47 72 L60 48 L52 48 Z' fill='%2334d399'/></svg>">
 <style>
 :root{
@@ -237,7 +237,7 @@ footer .foot-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:w
     <p class="hero-meta"><b>26 modules</b> · <b>0 runtime deps</b> · <b>77 tests</b> · benchmarked across <b>7 scenarios</b></p>
 
     <div class="chip">
-      <code id="install-cmd">/plugins install https://github.com/&lt;you&gt;/kimi-context-optimizer</code>
+      <code id="install-cmd">/plugins install https://github.com/egorfedorov/kimi-context-optimizer</code>
       <button class="chip-copy" id="copy-btn" type="button">Copy</button>
     </div>
 
@@ -288,7 +288,7 @@ footer .foot-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:w
     <h2>Three steps, zero config.</h2>
     <p class="sec-sub">KCO registers hooks in the Kimi Code lifecycle. They fire before the
       cost is incurred — not after.</p>
-    <img class="how-img" src="../assets/how-it-works.svg" alt="How KCO works: hooks intercept tool calls, cache and track against wire.jsonl ground truth, and save 63% of tokens" loading="lazy">
+    <img class="how-img" src="assets/how-it-works.svg" alt="How KCO works: hooks intercept tool calls, cache and track against wire.jsonl ground truth, and save 63% of tokens" loading="lazy">
   </div>
 </section>
 
@@ -336,7 +336,7 @@ footer .foot-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:w
           what delegated work actually costs.</p>
       </div>
     </div>
-    <img class="dash-img" src="../assets/dashboard-demo.svg" alt="The /kco control center: real context percentage, cache hit rate, blocked reads and tokens saved" loading="lazy">
+    <img class="dash-img" src="assets/dashboard-demo.svg" alt="The /kco control center: real context percentage, cache hit rate, blocked reads and tokens saved" loading="lazy">
   </div>
 </section>
 
@@ -407,7 +407,7 @@ footer .foot-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:w
     <div class="steps">
       <div class="step"><div class="step-n">1</div><h3>Install the plugin</h3>
         <p>From Kimi Code CLI, point at a local path or a git URL.</p>
-        <code>/plugins install https://github.com/&lt;you&gt;/kimi-context-optimizer</code></div>
+        <code>/plugins install https://github.com/egorfedorov/kimi-context-optimizer</code></div>
       <div class="step"><div class="step-n">2</div><h3>Reload</h3>
         <p>Hooks and skills register on reload. Updating later = reinstall + reload again.</p>
         <code>/reload</code></div>

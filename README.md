@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="#install"><strong>Install</strong></a> ·
-  <a href="https://&lt;user&gt;.github.io/kimi-context-optimizer/"><strong>Landing page</strong></a> ·
+  <a href="https://egorfedorov.github.io/kimi-context-optimizer/"><strong>Landing page</strong></a> ·
   <a href="#all-commands"><strong>Commands</strong></a> ·
   <a href="#why-the-kimi-version-is-better"><strong>Why better</strong></a>
 </p>
@@ -55,7 +55,7 @@ KCO hooks into the Kimi Code lifecycle and quietly fixes this. **Install &
 forget** — it works from the first tool call:
 
 ```bash
-/plugins install https://github.com/<you>/kimi-context-optimizer
+/plugins install https://github.com/egorfedorov/kimi-context-optimizer
 /reload
 ```
 
@@ -209,7 +209,7 @@ Requires Kimi Code CLI and Node.js ≥ 18 on your `PATH` (hooks are plain
 /plugins install /path/to/kimi-context-optimizer
 
 # Option 2 — straight from GitHub
-/plugins install https://github.com/<you>/kimi-context-optimizer
+/plugins install https://github.com/egorfedorov/kimi-context-optimizer
 
 # then
 /reload
