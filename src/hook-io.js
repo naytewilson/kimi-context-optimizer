@@ -17,6 +17,8 @@
  * Pure ESM, zero dependencies.
  */
 
+import { isAbsolute, resolve } from 'node:path';
+
 import { isMainModule } from './utils.js';
 
 // ── stdin ────────────────────────────────────────────────────────────────────
@@ -75,6 +77,20 @@ export function advise(text) {
 }
 
 // ── Payload accessors ────────────────────────────────────────────────────────
+
+/**
+ * Resolve a tool_input path against the session cwd from the payload.
+ * Plugin hooks run with cwd = the plugin root (NOT the session's project
+ * directory), so a relative path like "app.js" would otherwise resolve
+ * against the wrong directory — silently breaking mtime checks and cache
+ * keys for every relative Read/Edit/Write the model makes.
+ */
+export function resolvePayloadPath(payload, p) {
+  if (!p || typeof p !== 'string') return '';
+  if (isAbsolute(p)) return p;
+  const cwd = payload && typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
+  return resolve(cwd, p);
+}
 
 /**
  * Extract the user's prompt text from a UserPromptSubmit payload.

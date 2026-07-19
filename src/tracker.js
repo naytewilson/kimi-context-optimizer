@@ -37,7 +37,7 @@ import {
   shouldIgnoreForTracking, getFileLines, getProjectRoot,
   acquireFileLock, updateCalibrationFromSession
 } from './utils.js';
-import { advise, isMainModule, runHook } from './hook-io.js';
+import { advise, isMainModule, runHook, resolvePayloadPath } from './hook-io.js';
 import { emitNotice } from './notices.js';
 import { getSessionUsage } from './wire-usage.js';
 
@@ -937,7 +937,7 @@ async function handleHookEvent(event) {
       trackToolUse(session, toolName);
 
       if (toolName === 'Read') {
-        const filePath = toolInput.path || '';
+        const filePath = resolvePayloadPath(event, toolInput.path);
         const lineCount = toolInput.limit || getFileLines(filePath);
         trackRead(session, filePath, lineCount, {
           offset: toolInput.offset,
@@ -946,7 +946,7 @@ async function handleHookEvent(event) {
       }
 
       if (toolName === 'Edit' || toolName === 'Write') {
-        const filePath = toolInput.path || '';
+        const filePath = resolvePayloadPath(event, toolInput.path);
         trackEdit(session, filePath);
       }
 
@@ -982,7 +982,7 @@ async function handleHookEvent(event) {
       {
         let tokensAdded = 0;
         if (toolName === 'Read') {
-          const fp = toolInput.path || '';
+          const fp = resolvePayloadPath(event, toolInput.path);
           // Prefer the real output size; fall back to the tracked estimate.
           tokensAdded = typeof event.tool_output === 'string' && event.tool_output
             ? estimateTokensFromString(event.tool_output)

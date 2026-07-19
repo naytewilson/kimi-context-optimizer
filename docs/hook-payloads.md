@@ -30,6 +30,10 @@ Not captured but documented: `PreCompact`/`PostCompact` (matcher `manual`/`auto`
 - **Advise**: stdout + `exit(0)` — appended to context (verified for UserPromptSubmit; treat as best-effort elsewhere, keep a notices ledger as fallback).
 - Fail-open: non-zero≠2, timeout, crash → allowed. Hooks must never crash the session.
 - Plugin hooks run with cwd = plugin root and env `KIMI_PLUGIN_ROOT` — `node ./src/x.js` works.
+  Consequence: a relative `tool_input.path` (e.g. `app.js`) resolves against the PLUGIN root,
+  not the session project — always pass it through `resolvePayloadPath(payload, p)` (hook-io.js),
+  which anchors relatives at the payload's `cwd`. Found the hard way: read-cache never blocked
+  relative re-reads until this was fixed.
 
 ## wire.jsonl (ground truth, verified)
 

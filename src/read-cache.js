@@ -40,7 +40,7 @@ import {
   estimateTokens, formatTokens, loadJSON, saveJSON, ensureDataDirs,
   loadConfig, getEffectiveBudget, getFileLines, shouldSkipFile,
 } from './utils.js';
-import { block, advise, isMainModule, runHook } from './hook-io.js';
+import { block, advise, isMainModule, runHook, resolvePayloadPath } from './hook-io.js';
 import { isContextIgnored } from './contextignore.js';
 import { parseFileStructure, formatDigest } from './file-digest.js';
 
@@ -282,7 +282,7 @@ async function main(event) {
 
   // ── PostToolUse: invalidate cache on Edit/Write ─────────────────────
   if (event.hook_event_name === 'PostToolUse' && (event.tool_name === 'Edit' || event.tool_name === 'Write')) {
-    const filePath = (event.tool_input || {}).path || '';
+    const filePath = resolvePayloadPath(event, (event.tool_input || {}).path);
     if (filePath) {
       const sessionId = event.session_id || 'unknown';
       const cache = loadCache(sessionId);
@@ -298,7 +298,7 @@ async function main(event) {
   if ((event.tool_name || '') !== 'Read') return;
 
   const toolInput = event.tool_input || {};
-  const filePath = toolInput.path || '';
+  const filePath = resolvePayloadPath(event, toolInput.path);
   const sessionId = event.session_id || 'unknown';
   const ppid = process.ppid;
 

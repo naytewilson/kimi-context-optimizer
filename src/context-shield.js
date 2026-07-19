@@ -21,7 +21,7 @@ import {
   PATTERNS_FILE,
   formatTokens, loadJSON, ensureDataDirs
 } from './utils.js';
-import { isMainModule, runHook } from './hook-io.js';
+import { isMainModule, runHook, resolvePayloadPath } from './hook-io.js';
 import { emitNotice } from './notices.js';
 
 ensureDataDirs();
@@ -117,7 +117,7 @@ async function hookMain(payload) {
   if (toolName !== 'Read') return;
 
   // Kimi Read input uses `path` (Claude used `file_path`).
-  const filePath = toolInput.path || '';
+  const filePath = resolvePayloadPath(payload, toolInput.path);
   if (!filePath || filePath.startsWith('/dev/') || filePath.startsWith('/proc/')) return;
 
   const sessionId = payload.session_id || 'unknown';

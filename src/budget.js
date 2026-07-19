@@ -32,7 +32,7 @@ import {
   estimateTokens, estimateTokensFromString, getCalibrationFactor,
   computeCost, formatCost,
 } from './utils.js';
-import { isMainModule, runHook } from './hook-io.js';
+import { isMainModule, runHook, resolvePayloadPath } from './hook-io.js';
 import { emitNotice } from './notices.js';
 import { getActiveModel } from './kimi-config.js';
 import { getSessionUsage } from './wire-usage.js';
@@ -65,14 +65,14 @@ function saveBudgetState(state) {
  * Estimate input + output tokens consumed by a tool call.
  * Returns { input, output }.
  */
-function estimateToolTokens(toolName, toolInput) {
+function estimateToolTokens(toolName, toolInput, payload) {
   switch (toolName) {
     case 'Read': {
       // Input = file contents echoed back into context. Cap the assumed line
       // count by the file's real size (a full read of a 40-line file is 40
       // lines, not the 2000-line default) and use the extension-aware ratio.
       let lines = toolInput?.limit || 2000;
-      const fp = toolInput?.path || '';
+      const fp = resolvePayloadPath(payload, toolInput?.path);
       try {
         const sizeLines = Math.ceil(statSync(fp).size / 36); // ~35 chars + newline
         lines = Math.min(lines, Math.max(1, sizeLines));
@@ -154,7 +154,7 @@ async function main(event) {
   const budgetConfig = loadBudgetConfig();
   const state = loadBudgetState(sessionId);
 
-  const est = estimateToolTokens(toolName, toolInput);
+  const est = estimateToolTokens(toolName, toolInput, event);
   // GROUND TRUTH per tool call: PostToolUse carries the actual tool_output
   // that just entered the context — its real size beats any stat-based guess
   // (and covers Bash/MCP output, which estimation can't see at all).
@@ -190,7 +190,7 @@ async function main(event) {
   state.outputTokensEstimated += outAdded;
   state.totalTokensEstimated = state.inputTokensEstimated + state.outputTokensEstimated;
 
-  const filePath = toolInput?.path;
+  const filePath = resolvePayloadPath(event, toolInput?.path);
   if (filePath) {
     if (!state.filesLoaded[filePath]) {
       // Cap the map: the whole state file is rewritten on every tool call, so
