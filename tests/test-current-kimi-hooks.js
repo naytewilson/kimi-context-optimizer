@@ -1,10 +1,10 @@
 /**
  * Current Kimi CLI hook/tool compatibility.
  *
- * Kimi's current public docs name built-ins ReadFile, WriteFile,
- * StrReplaceFile and Shell, while the July 2026 live-capture fixtures in this
- * fork used Read/Edit/Write/Bash. KCO must accept both generations or its
- * accounting can silently become zero while looking healthy.
+ * Current Kimi source names built-ins ReadFile, WriteFile, StrReplaceFile and
+ * Shell. July 2026 live-capture fixtures in this fork used Read/Edit/Write/Bash.
+ * Production wrappers must normalize both generations or accounting can become
+ * mathematically tidy while silently missing the actual live calls.
  */
 
 import { test } from 'node:test';
@@ -50,20 +50,47 @@ test('hook compatibility normalizes current and legacy built-in tool names', asy
   assert.equal(io.canonicalToolName('Bash'), 'Bash');
 });
 
-test('hook compatibility reads current file_path and ReadFile line range fields', async () => {
+test('payload normalizer accepts current ReadFile and StrReplaceFile source shapes', async () => {
   const io = await import('../src/hook-io.js');
-  assert.equal(typeof io.getToolPath, 'function');
-  assert.equal(typeof io.getReadRange, 'function');
+  assert.equal(typeof io.normalizeHookPayload, 'function');
 
-  assert.equal(io.getToolPath({ file_path: '/tmp/current.js' }), '/tmp/current.js');
-  assert.equal(io.getToolPath({ path: '/tmp/legacy.js' }), '/tmp/legacy.js');
+  const read = io.normalizeHookPayload({
+    tool_name: 'ReadFile',
+    tool_input: { path: '/tmp/current.js', line_offset: 2, n_lines: 3 },
+  });
+  assert.equal(read.tool_name, 'Read');
+  assert.equal(read.kco_original_tool_name, 'ReadFile');
+  assert.equal(read.tool_input.path, '/tmp/current.js');
+  assert.equal(read.tool_input.offset, 1);
+  assert.equal(read.tool_input.limit, 3);
+
+  const edit = io.normalizeHookPayload({
+    tool_name: 'StrReplaceFile',
+    tool_input: {
+      path: '/tmp/current.js',
+      edit: [
+        { old: 'alpha', new: 'ALPHA', replace_all: false },
+        { old: 'beta', new: 'BETA', replace_all: true },
+      ],
+    },
+  });
+  assert.equal(edit.tool_name, 'Edit');
+  assert.equal(edit.tool_input.path, '/tmp/current.js');
+  assert.equal(edit.tool_input.old_string, 'alpha\nbeta');
+  assert.equal(edit.tool_input.new_string, 'ALPHA\nBETA');
+});
+
+test('hook compatibility reads current file path and ReadFile line range fields', async () => {
+  const io = await import('../src/hook-io.js');
+  assert.equal(io.getToolPath({ file_path: '/tmp/recent.js' }), '/tmp/recent.js');
+  assert.equal(io.getToolPath({ path: '/tmp/current.js' }), '/tmp/current.js');
   assert.deepEqual(io.getReadRange({ line_offset: 2, n_lines: 3 }, 10), { offset: 1, limit: 3, end: 4 });
   assert.deepEqual(io.getReadRange({ offset: 1, limit: 3 }, 10), { offset: 1, limit: 3, end: 4 });
   assert.deepEqual(io.getReadRange({ line_offset: -2, n_lines: 2 }, 10), { offset: 8, limit: 2, end: 10 });
   assert.deepEqual(io.getReadRange({ offset: 3000, limit: 50 }, 10), { offset: 3000, limit: 50, end: 3050 });
 });
 
-test('manifest matches both current and legacy Kimi built-in tool names', () => {
+test('manifest routes tracker and budget through normalized production wrappers', () => {
   const manifest = JSON.parse(readFileSync(join(repoRoot, 'kimi.plugin.json'), 'utf8'));
   const hooks = manifest.hooks || [];
 
@@ -78,9 +105,12 @@ test('manifest matches both current and legacy Kimi built-in tool names', () => 
     assert.match(name, new RegExp(postEdit.matcher), `${name} must trigger read-cache invalidation`);
   }
 
-  const budgetHook = hooks.find((h) => h.event === 'PostToolUse' && /budget\.js/.test(h.command));
-  assert.ok(budgetHook);
+  const trackerHook = hooks.find((h) => h.event === 'PostToolUse' && /tracker-hook\.js/.test(h.command));
+  assert.ok(trackerHook, 'production tracker must use tracker-hook.js');
+  const budgetHook = hooks.find((h) => h.event === 'PostToolUse' && /budget-hook\.js/.test(h.command));
+  assert.ok(budgetHook, 'production budget must use budget-hook.js');
   for (const name of ['ReadFile', 'Read', 'WriteFile', 'Write', 'StrReplaceFile', 'Edit', 'Shell', 'Bash']) {
+    assert.match(name, new RegExp(trackerHook.matcher), `${name} must trigger tracker accounting`);
     assert.match(name, new RegExp(budgetHook.matcher), `${name} must trigger budget accounting`);
   }
 });
@@ -101,7 +131,8 @@ test('read-cache blocks a redundant current ReadFile and current StrReplaceFile 
 
   const edit = runHook('read-cache.js', {
     hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
-    tool_name: 'StrReplaceFile', tool_input: { file_path: file, old_str: 'line 1', new_str: 'line one' },
+    tool_name: 'StrReplaceFile',
+    tool_input: { path: file, edit: { old: 'line 1', new: 'line one', replace_all: false } },
     tool_output: 'ok',
   });
   assert.equal(edit.status, 0, edit.stderr);
@@ -110,21 +141,27 @@ test('read-cache blocks a redundant current ReadFile and current StrReplaceFile 
   assert.equal(afterEdit.status, 0, 'current edit tool invalidates read cache');
 });
 
-test('tracker records current ReadFile and StrReplaceFile under canonical semantics', () => {
+test('tracker wrapper records current ReadFile and StrReplaceFile under canonical semantics without observation chatter', () => {
   const file = join(workDir, 'tracker-current.js');
   writeFileSync(file, 'a\nb\nc\nd\n');
   const sid = `session-current-tracker-${process.pid}`;
 
-  assert.equal(runHook('tracker.js', {
+  const read = runHook('tracker-hook.js', {
     hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
     tool_name: 'ReadFile', tool_input: { path: file, line_offset: 1, n_lines: 2 },
     tool_output: 'a\nb',
-  }).status, 0);
-  assert.equal(runHook('tracker.js', {
+  });
+  assert.equal(read.status, 0, read.stderr);
+  assert.equal(read.stdout, '', 'PostToolUse tracker observation must stay silent');
+
+  const edit = runHook('tracker-hook.js', {
     hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
-    tool_name: 'StrReplaceFile', tool_input: { file_path: file, old_str: 'a', new_str: 'A' },
+    tool_name: 'StrReplaceFile',
+    tool_input: { path: file, edit: { old: 'a', new: 'A', replace_all: false } },
     tool_output: 'ok',
-  }).status, 0);
+  });
+  assert.equal(edit.status, 0, edit.stderr);
+  assert.equal(edit.stdout, '');
 
   const s = stateFile('sessions', sid);
   assert.equal(s.totalReads, 1);
@@ -133,22 +170,23 @@ test('tracker records current ReadFile and StrReplaceFile under canonical semant
   assert.equal(s.files[file].edits, 1);
 });
 
-test('budget queues a current Shell big-result advisory and current ReadFile bookkeeping uses the real path', () => {
+test('budget wrapper queues current Shell advisory and current ReadFile bookkeeping uses the real path', () => {
   const file = join(workDir, 'budget-current.js');
   writeFileSync(file, 'one\ntwo\nthree\n');
   const sid = `session-current-budget-${process.pid}`;
 
-  const read = runHook('budget.js', {
+  const read = runHook('budget-hook.js', {
     hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
     tool_name: 'ReadFile', tool_input: { path: file, line_offset: 1, n_lines: 2 },
     tool_output: 'one\ntwo',
   });
   assert.equal(read.status, 0, read.stderr);
+  assert.equal(read.stdout, '');
   const state = stateFile('budget', sid);
   assert.ok(state.filesLoaded[file], 'current ReadFile path must be attributed');
   assert.equal(state.filesLoaded[file].reads, 1);
 
-  const shell = runHook('budget.js', {
+  const shell = runHook('budget-hook.js', {
     hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
     tool_name: 'Shell', tool_input: { command: 'cat giant.log' },
     tool_output: 'x'.repeat(40_000),
@@ -160,7 +198,7 @@ test('budget queues a current Shell big-result advisory and current ReadFile boo
     hook_event_name: 'UserPromptSubmit', session_id: sid, cwd: workDir, prompt: 'continue',
   });
   assert.equal(flush.status, 0, flush.stderr);
-  assert.match(flush.stdout, /Shell result was/);
+  assert.match(flush.stdout, /(Shell|Bash) result was/);
   assert.match(flush.stdout, /tail\/head\/grep/);
 });
 
