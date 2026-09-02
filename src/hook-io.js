@@ -2,10 +2,11 @@
  * Hook protocol helpers for Kimi Code hooks.
  *
  * Kimi's hook/tool surface changed after the July 2026 live capture this fork
- * was originally ported from. Current docs use ReadFile/WriteFile/
- * StrReplaceFile/Shell and file_path + line_offset/n_lines in relevant tools;
- * older captures used Read/Edit/Write/Bash and path + offset/limit. KCO accepts
- * both and normalizes them before accounting.
+ * was originally ported from. Current Kimi source uses ReadFile/WriteFile/
+ * StrReplaceFile/Shell. ReadFile uses path + line_offset/n_lines and current
+ * StrReplaceFile uses path + edit:{old,new,replace_all} (or an edit array).
+ * Older captures used Read/Edit/Write/Bash with path + offset/limit and flat
+ * old/new fields. KCO normalizes both generations at one boundary.
  */
 
 import { isAbsolute, resolve } from 'node:path';
@@ -96,6 +97,74 @@ export function getReadRange(toolInput = {}, totalLines = 0) {
   }
 
   return { offset, limit, end: offset + limit };
+}
+
+function flattenEdits(edit) {
+  const edits = Array.isArray(edit) ? edit : (edit && typeof edit === 'object' ? [edit] : []);
+  return edits.filter((item) => item && typeof item === 'object');
+}
+
+/**
+ * Normalize a hook payload for legacy KCO core modules without discarding the
+ * original tool name or current fields. This is intentionally additive.
+ *
+ * For StrReplaceFile, flat old_string/new_string are synthesized only for
+ * token-size estimation. The real nested edit object remains intact.
+ */
+export function normalizeHookPayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return {};
+
+  const originalToolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+  const toolName = canonicalToolName(originalToolName);
+  const sourceInput = payload.tool_input && typeof payload.tool_input === 'object'
+    ? payload.tool_input : {};
+  const toolInput = { ...sourceInput };
+
+  const path = getToolPath(sourceInput);
+  if (path) {
+    if (typeof toolInput.path !== 'string') toolInput.path = path;
+    if (typeof toolInput.file_path !== 'string') toolInput.file_path = path;
+  }
+
+  if (toolName === 'Read') {
+    // Preserve current fields while synthesizing the older zero-based shape.
+    // Negative current offsets cannot be converted without the file length, so
+    // leave `offset` unset in that case; read-cache resolves them with disk truth.
+    if (!Number.isFinite(toolInput.offset) && Number.isFinite(sourceInput.line_offset)) {
+      const raw = Math.trunc(sourceInput.line_offset);
+      if (raw > 0) toolInput.offset = raw - 1;
+    }
+    if (!Number.isFinite(toolInput.limit) && Number.isFinite(sourceInput.n_lines)) {
+      toolInput.limit = Math.max(0, Math.trunc(sourceInput.n_lines));
+    }
+  }
+
+  if (toolName === 'Edit') {
+    const edits = flattenEdits(sourceInput.edit);
+    if (edits.length) {
+      if (typeof toolInput.old_string !== 'string') {
+        toolInput.old_string = edits.map((e) => typeof e.old === 'string' ? e.old : '').join('\n');
+      }
+      if (typeof toolInput.new_string !== 'string') {
+        toolInput.new_string = edits.map((e) => typeof e.new === 'string' ? e.new : '').join('\n');
+      }
+    } else {
+      // Defensive support for recent/alternate flat spellings.
+      if (typeof toolInput.old_string !== 'string' && typeof sourceInput.old_str === 'string') {
+        toolInput.old_string = sourceInput.old_str;
+      }
+      if (typeof toolInput.new_string !== 'string' && typeof sourceInput.new_str === 'string') {
+        toolInput.new_string = sourceInput.new_str;
+      }
+    }
+  }
+
+  return {
+    ...payload,
+    tool_name: toolName,
+    tool_input: toolInput,
+    kco_original_tool_name: originalToolName || toolName,
+  };
 }
 
 export function resolvePayloadPath(payload, p) {
