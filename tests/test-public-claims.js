@@ -15,15 +15,28 @@ import { spawnSync } from 'node:child_process';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
+function assertEvidenceHonestPublicCopy(text, surface) {
+  assert.match(text, /estimated net direct-input reduction/i, `${surface}: missing evidence label`);
+  assert.match(text, /cache-read[^\n<]*usage telemetry/i, `${surface}: cache telemetry must be named as telemetry`);
+  assert.match(text, /not[^\n<]*subscription quota/i, `${surface}: must reject direct quota conversion`);
+  assert.doesNotMatch(text, /Token Savings Proof/i, `${surface}: old proof claim remains`);
+  assert.doesNotMatch(text, /63% token savings/i, `${surface}: old fixed percentage remains`);
+  assert.doesNotMatch(text, /63% fewer tokens/i, `${surface}: old title percentage remains`);
+  assert.doesNotMatch(text, /KCO saved 60,055 tokens/i, `${surface}: old demo claim remains`);
+  assert.doesNotMatch(text, /honest savings number measured against the wire transcript/i, `${surface}: counterfactual mislabeled as observed`);
+  assert.doesNotMatch(text, /savings compound/i, `${surface}: compounding claim remains`);
+}
+
 test('README distinguishes observed usage from estimated counterfactual savings', () => {
   const text = readFileSync(join(root, 'README.md'), 'utf8');
-  assert.match(text, /estimated net direct-input reduction/i);
-  assert.match(text, /cache-read.*usage telemetry/i);
-  assert.match(text, /not.*subscription quota/i);
-  assert.doesNotMatch(text, /Token Savings Proof/i);
-  assert.doesNotMatch(text, /63% token savings/i);
-  assert.doesNotMatch(text, /honest savings number measured against the wire transcript/i);
-  assert.doesNotMatch(text, /savings compound/i);
+  assertEvidenceHonestPublicCopy(text, 'README');
+});
+
+test('GitHub Pages landing copy uses the same evidence contract', () => {
+  const text = readFileSync(join(root, 'docs', 'index.html'), 'utf8');
+  assertEvidenceHonestPublicCopy(text, 'docs/index.html');
+  assert.match(text, /Synthetic Counterfactual Benchmark/i);
+  assert.doesNotMatch(text, />63%</);
 });
 
 test('benchmark is explicitly synthetic and uses runtime savings accounting identity', () => {
