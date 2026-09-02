@@ -33,6 +33,10 @@ function runHook(script, payload) {
   });
 }
 
+function stateFile(dir, sid) {
+  return JSON.parse(readFileSync(join(kcoHome, dir, `${sid}.json`), 'utf8'));
+}
+
 test('hook compatibility normalizes current and legacy built-in tool names', async () => {
   const io = await import('../src/hook-io.js');
   assert.equal(typeof io.canonicalToolName, 'function');
@@ -53,15 +57,10 @@ test('hook compatibility reads current file_path and ReadFile line range fields'
 
   assert.equal(io.getToolPath({ file_path: '/tmp/current.js' }), '/tmp/current.js');
   assert.equal(io.getToolPath({ path: '/tmp/legacy.js' }), '/tmp/legacy.js');
-  assert.deepEqual(io.getReadRange({ line_offset: 2, n_lines: 3 }, 10), {
-    offset: 1, limit: 3, end: 4,
-  });
-  assert.deepEqual(io.getReadRange({ offset: 1, limit: 3 }, 10), {
-    offset: 1, limit: 3, end: 4,
-  });
-  assert.deepEqual(io.getReadRange({ line_offset: -2, n_lines: 2 }, 10), {
-    offset: 8, limit: 2, end: 10,
-  });
+  assert.deepEqual(io.getReadRange({ line_offset: 2, n_lines: 3 }, 10), { offset: 1, limit: 3, end: 4 });
+  assert.deepEqual(io.getReadRange({ offset: 1, limit: 3 }, 10), { offset: 1, limit: 3, end: 4 });
+  assert.deepEqual(io.getReadRange({ line_offset: -2, n_lines: 2 }, 10), { offset: 8, limit: 2, end: 10 });
+  assert.deepEqual(io.getReadRange({ offset: 3000, limit: 50 }, 10), { offset: 3000, limit: 50, end: 3050 });
 });
 
 test('manifest matches both current and legacy Kimi built-in tool names', () => {
@@ -109,4 +108,82 @@ test('read-cache blocks a redundant current ReadFile and current StrReplaceFile 
 
   const afterEdit = runHook('read-cache.js', readPayload);
   assert.equal(afterEdit.status, 0, 'current edit tool invalidates read cache');
+});
+
+test('tracker records current ReadFile and StrReplaceFile under canonical semantics', () => {
+  const file = join(workDir, 'tracker-current.js');
+  writeFileSync(file, 'a\nb\nc\nd\n');
+  const sid = `session-current-tracker-${process.pid}`;
+
+  assert.equal(runHook('tracker.js', {
+    hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
+    tool_name: 'ReadFile', tool_input: { path: file, line_offset: 1, n_lines: 2 },
+    tool_output: 'a\nb',
+  }).status, 0);
+  assert.equal(runHook('tracker.js', {
+    hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
+    tool_name: 'StrReplaceFile', tool_input: { file_path: file, old_str: 'a', new_str: 'A' },
+    tool_output: 'ok',
+  }).status, 0);
+
+  const s = stateFile('sessions', sid);
+  assert.equal(s.totalReads, 1);
+  assert.equal(s.totalEdits, 1);
+  assert.equal(s.files[file].reads, 1);
+  assert.equal(s.files[file].edits, 1);
+});
+
+test('budget queues a current Shell big-result advisory and current ReadFile bookkeeping uses the real path', () => {
+  const file = join(workDir, 'budget-current.js');
+  writeFileSync(file, 'one\ntwo\nthree\n');
+  const sid = `session-current-budget-${process.pid}`;
+
+  const read = runHook('budget.js', {
+    hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
+    tool_name: 'ReadFile', tool_input: { path: file, line_offset: 1, n_lines: 2 },
+    tool_output: 'one\ntwo',
+  });
+  assert.equal(read.status, 0, read.stderr);
+  const state = stateFile('budget', sid);
+  assert.ok(state.filesLoaded[file], 'current ReadFile path must be attributed');
+  assert.equal(state.filesLoaded[file].reads, 1);
+
+  const shell = runHook('budget.js', {
+    hook_event_name: 'PostToolUse', session_id: sid, cwd: workDir,
+    tool_name: 'Shell', tool_input: { command: 'cat giant.log' },
+    tool_output: 'x'.repeat(40_000),
+  });
+  assert.equal(shell.status, 0, shell.stderr);
+  assert.equal(shell.stdout, '', 'observation hook queues model-visible advice instead of narrating immediately');
+
+  const flush = runHook('notice-flush.js', {
+    hook_event_name: 'UserPromptSubmit', session_id: sid, cwd: workDir, prompt: 'continue',
+  });
+  assert.equal(flush.status, 0, flush.stderr);
+  assert.match(flush.stdout, /Shell result was/);
+  assert.match(flush.stdout, /tail\/head\/grep/);
+});
+
+test('context-shield recognizes current ReadFile and emits the historical-waste warning', () => {
+  const file = join(workDir, 'shield-current.js');
+  writeFileSync(file, 'const x = 1;\n');
+  writeFileSync(join(kcoHome, 'patterns.json'), JSON.stringify({
+    projects: {
+      [workDir]: {
+        fileFrequency: {},
+        wastedReads: { [file]: { count: 5, sessions: 5, totalTokensWasted: 5000 } },
+        coOccurrence: {},
+      },
+    },
+    taskPatterns: {},
+    lastUpdated: new Date().toISOString(),
+  }));
+
+  const sid = `session-current-shield-${process.pid}`;
+  const result = runHook('context-shield.js', {
+    hook_event_name: 'PreToolUse', session_id: sid, cwd: workDir,
+    tool_name: 'ReadFile', tool_input: { path: file, line_offset: 1, n_lines: 1 },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /went unused in 5 past sessions/);
 });
