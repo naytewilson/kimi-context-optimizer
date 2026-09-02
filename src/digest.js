@@ -1,220 +1,119 @@
 #!/usr/bin/env node
 
 /**
- * KCO Weekly/Daily Digest Generator (/kco-digest).
+ * KCO historical context-efficiency digest (/kco-digest).
  *
- * Aggregates session data over a time period and generates
- * a comprehensive digest with trends, insights, and an efficiency score.
- *
- * Port notes (vs the original claude-context-optimizer digest.js):
- *   - TOKENS FIRST: the EST. COST table (per-Claude-model $) is replaced by a
- *     single cost row shown only when pricing is configured.
- *   - Naming: KCO, Kimi, AGENTS.md, /kco-* commands.
+ * The digest grades behavior from tracker history. Its unused-read token volume
+ * is an ESTIMATED HISTORICAL HEURISTIC, not the runtime blocked-read savings
+ * ledger and not a measurement of Kimi subscription quota.
  */
 
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import {
-  SESSIONS_DIR, formatTokens, computeUsefulness,
-  getDonationMessage, isMainModule, getPricing, computeCost, formatCost,
+  SESSIONS_DIR, formatTokens, loadJSON, computeUsefulness, isMainModule,
 } from './utils.js';
 
-function getSessionsInRange(days) {
+function loadRecentSessions(days = 7) {
   if (!existsSync(SESSIONS_DIR)) return [];
-
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-
-  const files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json'));
+  const cutoff = Date.now() - Math.max(1, days) * 86400000;
   const sessions = [];
-
-  for (const f of files) {
-    try {
-      const session = JSON.parse(readFileSync(join(SESSIONS_DIR, f), 'utf-8'));
-      // Skip empty sessions
-      if (!session.files || Object.keys(session.files).length === 0) continue;
-      const sessionDate = new Date(session.updatedAt || session.startedAt);
-      if (sessionDate >= cutoff) {
-        sessions.push(session);
-      }
-    } catch {
-      // skip corrupt files
-    }
+  for (const f of readdirSync(SESSIONS_DIR).filter(x => x.endsWith('.json'))) {
+    const s = loadJSON(join(SESSIONS_DIR, f));
+    if (!s || !s.files || Object.keys(s.files).length === 0) continue;
+    const ts = new Date(s.updatedAt || s.endedAt || s.startedAt || 0).getTime();
+    if (ts >= cutoff) sessions.push(s);
   }
-
-  return sessions.sort((a, b) =>
-    new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
-  );
+  return sessions;
 }
 
-function calculateEfficiencyScore(sessions) {
-  if (sessions.length === 0) return { score: 0, grade: '-', breakdown: {} };
+function historicalMetrics(sessions) {
+  let totalReadVolume = 0;
+  let unusedReadVolume = 0;
+  let reads = 0;
+  let edits = 0;
+  let searches = 0;
+  let failures = 0;
 
-  let totalTokens = 0;
-  let wastedTokens = 0;
-  let totalReads = 0;
-  let totalEdits = 0;
-  let totalSearches = 0;
-  let reReads = 0;
-
-  for (const session of sessions) {
-    for (const [, fileData] of Object.entries(session.files || {})) {
-      const tokens = (fileData.estTokens || 0) * (fileData.reads || 1);
-      totalTokens += tokens;
-
-      // Use consistent usefulness scoring
-      const usefulness = computeUsefulness(fileData);
-      if (usefulness <= 0 && (fileData.reads || 0) >= 1) {
-        wastedTokens += tokens;
-      }
-
-      if (fileData.reads > 2 && !fileData.wasEdited) {
-        reReads += fileData.reads - 1;
-      }
-
-      totalReads += fileData.reads || 0;
-      totalEdits += fileData.edits || 0;
+  for (const s of sessions) {
+    reads += s.totalReads || 0;
+    edits += s.totalEdits || 0;
+    searches += s.totalSearches || 0;
+    failures += s.failedCalls || 0;
+    for (const f of Object.values(s.files || {})) {
+      const volume = (f.estTokens || 0) * Math.max(1, f.reads || 1);
+      totalReadVolume += volume;
+      if (computeUsefulness(f) <= 0 && (f.reads || 0) > 0) unusedReadVolume += volume;
     }
-    totalSearches += session.totalSearches || 0;
   }
 
-  const wasteScore = totalTokens > 0 ?
-    Math.max(0, 100 - Math.round((wastedTokens / totalTokens) * 100)) : 100;
-
-  const editRatio = totalReads > 0 ? totalEdits / totalReads : 0;
-  const editScore = Math.min(100, Math.round(editRatio * 200));
-
-  const searchEfficiency = totalSearches > 0 && totalReads > 0 ?
-    Math.min(100, Math.round((1 - totalSearches / (totalSearches + totalReads)) * 100)) : 80;
-
-  const reReadPenalty = totalReads > 0 ?
-    Math.max(0, 100 - Math.round((reReads / totalReads) * 100)) : 100;
-
-  const score = Math.round(
-    wasteScore * 0.40 +
-    editScore * 0.25 +
-    searchEfficiency * 0.15 +
-    reReadPenalty * 0.20
-  );
-
-  let grade;
-  if (score >= 90) grade = 'S';
-  else if (score >= 80) grade = 'A';
-  else if (score >= 70) grade = 'B';
-  else if (score >= 55) grade = 'C';
-  else if (score >= 40) grade = 'D';
-  else grade = 'F';
-
   return {
-    score,
-    grade,
-    breakdown: { wasteScore, editScore, searchEfficiency, reReadPenalty },
-    stats: { totalTokens, wastedTokens, totalReads, totalEdits, totalSearches, sessions: sessions.length }
+    totalReadVolume,
+    unusedReadVolume,
+    unusedPct: totalReadVolume > 0 ? (unusedReadVolume / totalReadVolume) * 100 : 0,
+    reads, edits, searches, failures,
   };
 }
 
-function generateDigest(days) {
-  const sessions = getSessionsInRange(days);
-  const efficiency = calculateEfficiencyScore(sessions);
-  const period = days === 1 ? 'DAILY' : days === 7 ? 'WEEKLY' : `${days}-DAY`;
+/** 0..100 behavioral efficiency score. This is a heuristic grade, not savings. */
+function calculateEfficiencyScore(sessions) {
+  if (!sessions.length) return { score: 0, grade: 'N/A', breakdown: {} };
+  const m = historicalMetrics(sessions);
+  const contextPrecision = Math.max(0, 100 - Math.round(m.unusedPct));
+  const editEfficiency = m.reads > 0 ? Math.min(100, Math.round((m.edits / m.reads) * 200)) : 100;
+  const searchAccuracy = (m.searches + m.reads) > 0
+    ? Math.max(0, Math.min(100, Math.round((m.searches / (m.searches + m.reads)) * 100 + 70)))
+    : 100;
+  const focusScore = Math.max(0, 100 - Math.min(60, m.failures * 5));
+  const score = Math.round(
+    contextPrecision * 0.40 + editEfficiency * 0.25 + searchAccuracy * 0.15 + focusScore * 0.20,
+  );
+  const grade = score >= 90 ? 'S' : score >= 80 ? 'A' : score >= 70 ? 'B' : score >= 60 ? 'C' : score >= 50 ? 'D' : 'F';
+  return { score, grade, breakdown: { contextPrecision, editEfficiency, searchAccuracy, focusScore } };
+}
 
-  let output = '\n';
-  output += `  ╔${'═'.repeat(62)}╗\n`;
-  output += `  ║            KCO ${period} CONTEXT EFFICIENCY DIGEST              ║\n`;
-  output += `  ╚${'═'.repeat(62)}╝\n\n`;
+function renderDigest(sessions, days) {
+  if (!sessions.length) return '\n  No tracked sessions in this period.\n';
+  const m = historicalMetrics(sessions);
+  const e = calculateEfficiencyScore(sessions);
+  const barWidth = 40;
+  const filled = Math.max(0, Math.min(barWidth, Math.round(e.score / 100 * barWidth)));
 
-  if (sessions.length === 0) {
-    output += '  No sessions in this period yet. Just use Kimi Code and data appears here automatically!\n';
-    console.log(output);
-    return;
-  }
-
-  const scoreBar = '█'.repeat(Math.round(efficiency.score / 2.5)) +
-                   '░'.repeat(40 - Math.round(efficiency.score / 2.5));
-
-  output += `  EFFICIENCY SCORE\n`;
-  output += `  ${'─'.repeat(54)}\n`;
-  output += `  Grade: ${efficiency.grade}  Score: ${efficiency.score}/100\n`;
-  output += `  [${scoreBar}]\n\n`;
-
-  output += `  Breakdown:\n`;
-  output += `    Context Precision .... ${efficiency.breakdown.wasteScore}/100  (${efficiency.breakdown.wasteScore >= 70 ? 'good' : 'needs work'})\n`;
-  output += `    Edit Efficiency ...... ${efficiency.breakdown.editScore}/100  (${efficiency.breakdown.editScore >= 50 ? 'good' : 'low edits vs reads'})\n`;
-  output += `    Search Accuracy ...... ${efficiency.breakdown.searchEfficiency}/100\n`;
-  output += `    Focus Score .......... ${efficiency.breakdown.reReadPenalty}/100  (${efficiency.breakdown.reReadPenalty >= 70 ? 'focused' : 'too much re-reading'})\n\n`;
-
-  output += `  STATS (last ${days} days)\n`;
-  output += `  ${'─'.repeat(54)}\n`;
-  output += `  Sessions:         ${efficiency.stats.sessions}\n`;
-  output += `  Total tokens:     ${formatTokens(efficiency.stats.totalTokens)}\n`;
-  output += `  Wasted tokens:    ${formatTokens(efficiency.stats.wastedTokens)}\n`;
-  output += `  Files read:       ${efficiency.stats.totalReads}\n`;
-  output += `  Files edited:     ${efficiency.stats.totalEdits}\n`;
-  output += `  Searches:         ${efficiency.stats.totalSearches}\n`;
-
-  // $ only when the user configured pricing — tokens are the headline.
-  const pricing = getPricing();
-  if (pricing.input !== null) {
-    output += `\n  EST. COST (from your configured pricing)\n`;
-    output += `  ${'─'.repeat(54)}\n`;
-    const total = computeCost(efficiency.stats.totalTokens, 'input');
-    const wasted = computeCost(efficiency.stats.wastedTokens, 'input');
-    output += `  Total: ${formatCost(total)}   Wasted: ${formatCost(wasted)}   Saveable: ${formatCost(wasted)}  (at $${pricing.input}/1M input tokens)\n`;
-  }
-
-  if (sessions.length > 1) {
-    output += `\n  SESSION BREAKDOWN\n`;
-    output += `  ${'─'.repeat(54)}\n`;
-    output += `  #   Date          Files  Edits  Tokens    Waste\n`;
-
-    sessions.forEach((s, i) => {
-      const date = new Date(s.startedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const fileCount = Object.keys(s.files || {}).length;
-      const totalTok = Object.values(s.files || {}).reduce((sum, f) =>
-        sum + (f.estTokens || 0) * (f.reads || 1), 0);
-      const wasteTok = Object.values(s.files || {}).reduce((sum, f) => {
-        const u = computeUsefulness(f);
-        return u <= 0 ? sum + (f.estTokens || 0) * (f.reads || 1) : sum;
-      }, 0);
-      const wastePct = totalTok > 0 ? Math.round((wasteTok / totalTok) * 100) : 0;
-
-      output += `  ${String(i + 1).padStart(2)}  ${date.padEnd(12)}  ${String(fileCount).padStart(5)}  ${String(s.totalEdits || 0).padStart(5)}  ${formatTokens(totalTok).padStart(8)}  ${String(wastePct).padStart(4)}%\n`;
-    });
-  }
-
-  output += `\n  TIPS\n`;
-  output += `  ${'─'.repeat(54)}\n`;
-
-  if (efficiency.score >= 80) {
-    output += `  You're a context efficiency master! Keep it up.\n`;
-  } else {
-    if (efficiency.breakdown.wasteScore < 70) {
-      output += `  - Some files were read but never used. Try Grep first to pinpoint\n`;
-      output += `    what you need, then Read only that.\n`;
-    }
-    if (efficiency.breakdown.editScore < 40) {
-      output += `  - Lots of reading, not much editing. Give Kimi a precise task\n`;
-      output += `    description so it reads fewer files.\n`;
-    }
-    if (efficiency.breakdown.reReadPenalty < 60) {
-      output += `  - Files getting re-read a lot. Add key facts to AGENTS.md so they\n`;
-      output += `    stay in context, or go easy on /compact.\n`;
-    }
-  }
-
-  output += getDonationMessage();
-  output += '\n';
-  console.log(output);
+  let out = '\n';
+  out += `  ╔${'═'.repeat(62)}╗\n`;
+  out += '  ║            KCO WEEKLY CONTEXT EFFICIENCY DIGEST              ║\n';
+  out += `  ╚${'═'.repeat(62)}╝\n\n`;
+  out += '  Evidence class: ESTIMATED HISTORICAL HEURISTIC\n';
+  out += '  Estimated historical unused-read volume is behavioral history, not the runtime blocked-read savings ledger.\n\n';
+  out += '  EFFICIENCY SCORE\n';
+  out += '  ' + '─'.repeat(54) + '\n';
+  out += `  Grade: ${e.grade}  Score: ${e.score}/100\n`;
+  out += `  [${'█'.repeat(filled)}${'░'.repeat(barWidth - filled)}]\n\n`;
+  out += `  Breakdown:\n`;
+  out += `    Context Precision .... ${e.breakdown.contextPrecision}/100\n`;
+  out += `    Edit Efficiency ...... ${e.breakdown.editEfficiency}/100\n`;
+  out += `    Search Accuracy ...... ${e.breakdown.searchAccuracy}/100\n`;
+  out += `    Focus Score .......... ${e.breakdown.focusScore}/100\n\n`;
+  out += `  STATS (last ${days} days)\n`;
+  out += '  ' + '─'.repeat(54) + '\n';
+  out += `  Sessions:                                ${sessions.length}\n`;
+  out += `  Estimated historical read volume:        ${formatTokens(m.totalReadVolume)}\n`;
+  out += `  Estimated historical unused-read volume: ${formatTokens(m.unusedReadVolume)} (${m.unusedPct.toFixed(1)}%)\n`;
+  out += `  Reads / edits / searches:                 ${m.reads} / ${m.edits} / ${m.searches}\n`;
+  out += `  Failed tool calls:                        ${m.failures}\n\n`;
+  out += '  Interpretation: this digest describes historical optimization opportunity.\n';
+  out += '  It is not causal KCO savings and not a direct measurement of Kimi subscription quota.\n';
+  return out;
 }
 
 function main() {
-  const days = parseInt(process.argv[2]) || 7;
-  generateDigest(days);
+  const days = Math.max(1, parseInt(process.argv[2], 10) || 7);
+  const sessions = loadRecentSessions(days);
+  console.log(renderDigest(sessions, days));
 }
 
 if (isMainModule(import.meta.url)) {
   try { main(); } catch (e) { console.error(`[kco] digest error: ${e.message}`); process.exit(0); }
 }
 
-// Exposed for tests
-export { getSessionsInRange, calculateEfficiencyScore };
+export { loadRecentSessions, calculateEfficiencyScore, renderDigest };
