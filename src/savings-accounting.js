@@ -119,12 +119,15 @@ function observedUsageTotals(usage = {}) {
   const componentInput = inputOtherTokens + cacheReadTokens + cacheCreationTokens;
   const reportedInputSide = nonNegativeFinite(usage.totalInputSide);
 
-  // wire-usage.js already computes totalInputSide from the three components.
-  // Accept a supplied total for callers/tests that only retained the aggregate,
-  // otherwise reconstruct it from the Kimi-defined component identity.
-  const inputTokens = reportedInputSide > 0 || componentInput === 0
-    ? reportedInputSide
-    : componentInput;
+  // wire-usage.js computes totalInputSide from these exact three components.
+  // If callers retained both forms they must agree exactly. If the aggregate
+  // is absent, reconstruct it from Kimi's component identity. If components
+  // were not retained, an observed aggregate is still usable by itself.
+  const hasComponents = componentInput > 0;
+  const hasAggregate = reportedInputSide > 0;
+  const inputIdentityConsistent = !(hasComponents && hasAggregate)
+    || componentInput === reportedInputSide;
+  const inputTokens = hasAggregate ? reportedInputSide : componentInput;
   const outputTokens = nonNegativeFinite(usage.totalOutput);
 
   return {
@@ -134,7 +137,13 @@ function observedUsageTotals(usage = {}) {
     inputTokens,
     outputTokens,
     totalProviderTokens: inputTokens + outputTokens,
+    inputIdentityConsistent,
   };
+}
+
+function publicUsageTotals(totals) {
+  const { inputIdentityConsistent, ...visible } = totals;
+  return visible;
 }
 
 function reductionPercent(controlValue, optimizedValue) {
@@ -152,8 +161,10 @@ function reductionPercent(controlValue, optimizedValue) {
  * controls were held fixed (ideally over repeated, order-balanced pairs).
  */
 export function computeObservedPairedUsageDelta(controlUsage = {}, optimizedUsage = {}) {
-  const control = observedUsageTotals(controlUsage);
-  const optimized = observedUsageTotals(optimizedUsage);
+  const controlInternal = observedUsageTotals(controlUsage);
+  const optimizedInternal = observedUsageTotals(optimizedUsage);
+  const control = publicUsageTotals(controlInternal);
+  const optimized = publicUsageTotals(optimizedInternal);
   const controlHasUsage = nonNegativeFinite(controlUsage.recognizedUsageRows) > 0;
   const optimizedHasUsage = nonNegativeFinite(optimizedUsage.recognizedUsageRows) > 0;
 
@@ -162,10 +173,20 @@ export function computeObservedPairedUsageDelta(controlUsage = {}, optimizedUsag
     comparabilityReasons.push('provider usage is missing from one or both runs');
   }
 
-  const controlModel = typeof controlUsage.model === 'string' ? controlUsage.model : null;
-  const optimizedModel = typeof optimizedUsage.model === 'string' ? optimizedUsage.model : null;
-  if (controlModel && optimizedModel && controlModel !== optimizedModel) {
+  const controlModel = typeof controlUsage.model === 'string' && controlUsage.model
+    ? controlUsage.model
+    : null;
+  const optimizedModel = typeof optimizedUsage.model === 'string' && optimizedUsage.model
+    ? optimizedUsage.model
+    : null;
+  if (!controlModel || !optimizedModel) {
+    comparabilityReasons.push('model identity is missing from one or both runs');
+  } else if (controlModel !== optimizedModel) {
     comparabilityReasons.push(`model mismatch: ${controlModel} vs ${optimizedModel}`);
+  }
+
+  if (!controlInternal.inputIdentityConsistent || !optimizedInternal.inputIdentityConsistent) {
+    comparabilityReasons.push('reported input aggregate does not equal the sum of Kimi input components');
   }
 
   const avoided = {
@@ -177,22 +198,22 @@ export function computeObservedPairedUsageDelta(controlUsage = {}, optimizedUsag
     totalProviderTokens: control.totalProviderTokens - optimized.totalProviderTokens,
   };
 
-  const hasObservedPair = controlHasUsage && optimizedHasUsage;
+  const comparable = comparabilityReasons.length === 0;
   const reductionPct = {
-    inputTokens: hasObservedPair
+    inputTokens: comparable
       ? reductionPercent(control.inputTokens, optimized.inputTokens)
       : null,
-    outputTokens: hasObservedPair
+    outputTokens: comparable
       ? reductionPercent(control.outputTokens, optimized.outputTokens)
       : null,
-    totalProviderTokens: hasObservedPair
+    totalProviderTokens: comparable
       ? reductionPercent(control.totalProviderTokens, optimized.totalProviderTokens)
       : null,
   };
 
   return {
     classification: 'OBSERVED_PAIRED_RUN_DELTA',
-    comparable: comparabilityReasons.length === 0,
+    comparable,
     comparabilityReasons,
     control,
     optimized,
