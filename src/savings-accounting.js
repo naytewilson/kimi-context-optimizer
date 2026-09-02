@@ -16,6 +16,25 @@
  * blocked result might have been replayed on later calls, but behavior and
  * compaction would also have changed. Replay is reported separately as an
  * observed efficiency signal rather than smuggled into a fake precise saving.
+ *
+ * For an actual matched control/optimized experiment we can be stricter. Kimi
+ * defines total input as:
+ *
+ *   input = input_other + input_cache_read + input_cache_creation
+ *
+ * and provider-token volume as:
+ *
+ *   provider_total = input + output
+ *
+ * A paired run therefore has an OBSERVED arithmetic delta:
+ *
+ *   avoided_input  = control_input  - optimized_input
+ *   avoided_output = control_output - optimized_output
+ *   avoided_total  = control_total  - optimized_total
+ *
+ * Negative values are regressions and are never clamped away. This is a token
+ * volume comparison, NOT a claim about Kimi subscription-quota units: the
+ * subscription's weighting/conversion function is not exposed here.
  */
 
 import { readFileSync } from 'fs';
@@ -70,9 +89,9 @@ export function estimateVisibleTextTokens(text, calibrationFactor = 1) {
 }
 
 /**
- * Pure accounting identity. Negative net is intentionally preserved: if KCO
- * talks more than it prevents, the result must say so rather than flooring at
- * zero and awarding itself a participation trophy.
+ * Pure counterfactual accounting identity. Negative net is intentionally
+ * preserved: if KCO talks more than it prevents, the result must say so rather
+ * than flooring at zero and awarding itself a participation trophy.
  */
 export function computeSavingsEstimate({
   grossAvoidedReadTokensEstimated = 0,
@@ -90,5 +109,96 @@ export function computeSavingsEstimate({
     totalOverheadTokensEstimated: overhead,
     netAvoidedTokensEstimated: gross - overhead,
     classification: 'ESTIMATED',
+  };
+}
+
+function observedUsageTotals(usage = {}) {
+  const inputOtherTokens = nonNegativeFinite(usage.totalInput);
+  const cacheReadTokens = nonNegativeFinite(usage.totalCacheRead);
+  const cacheCreationTokens = nonNegativeFinite(usage.totalCacheCreation);
+  const componentInput = inputOtherTokens + cacheReadTokens + cacheCreationTokens;
+  const reportedInputSide = nonNegativeFinite(usage.totalInputSide);
+
+  // wire-usage.js already computes totalInputSide from the three components.
+  // Accept a supplied total for callers/tests that only retained the aggregate,
+  // otherwise reconstruct it from the Kimi-defined component identity.
+  const inputTokens = reportedInputSide > 0 || componentInput === 0
+    ? reportedInputSide
+    : componentInput;
+  const outputTokens = nonNegativeFinite(usage.totalOutput);
+
+  return {
+    inputOtherTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    inputTokens,
+    outputTokens,
+    totalProviderTokens: inputTokens + outputTokens,
+  };
+}
+
+function reductionPercent(controlValue, optimizedValue) {
+  if (!(controlValue > 0)) return null;
+  return ((controlValue - optimizedValue) / controlValue) * 100;
+}
+
+/**
+ * Compare two completed Kimi runs using provider-reported token usage.
+ *
+ * This function proves only the arithmetic difference between the two observed
+ * runs. It does not, by itself, prove causality: model stochasticity, cache
+ * state, task drift, tool behavior, or environment drift can change a run.
+ * Callers should only describe the pair as a savings experiment when those
+ * controls were held fixed (ideally over repeated, order-balanced pairs).
+ */
+export function computeObservedPairedUsageDelta(controlUsage = {}, optimizedUsage = {}) {
+  const control = observedUsageTotals(controlUsage);
+  const optimized = observedUsageTotals(optimizedUsage);
+  const controlHasUsage = nonNegativeFinite(controlUsage.recognizedUsageRows) > 0;
+  const optimizedHasUsage = nonNegativeFinite(optimizedUsage.recognizedUsageRows) > 0;
+
+  const comparabilityReasons = [];
+  if (!controlHasUsage || !optimizedHasUsage) {
+    comparabilityReasons.push('provider usage is missing from one or both runs');
+  }
+
+  const controlModel = typeof controlUsage.model === 'string' ? controlUsage.model : null;
+  const optimizedModel = typeof optimizedUsage.model === 'string' ? optimizedUsage.model : null;
+  if (controlModel && optimizedModel && controlModel !== optimizedModel) {
+    comparabilityReasons.push(`model mismatch: ${controlModel} vs ${optimizedModel}`);
+  }
+
+  const avoided = {
+    inputOtherTokens: control.inputOtherTokens - optimized.inputOtherTokens,
+    cacheReadTokens: control.cacheReadTokens - optimized.cacheReadTokens,
+    cacheCreationTokens: control.cacheCreationTokens - optimized.cacheCreationTokens,
+    inputTokens: control.inputTokens - optimized.inputTokens,
+    outputTokens: control.outputTokens - optimized.outputTokens,
+    totalProviderTokens: control.totalProviderTokens - optimized.totalProviderTokens,
+  };
+
+  const hasObservedPair = controlHasUsage && optimizedHasUsage;
+  const reductionPct = {
+    inputTokens: hasObservedPair
+      ? reductionPercent(control.inputTokens, optimized.inputTokens)
+      : null,
+    outputTokens: hasObservedPair
+      ? reductionPercent(control.outputTokens, optimized.outputTokens)
+      : null,
+    totalProviderTokens: hasObservedPair
+      ? reductionPercent(control.totalProviderTokens, optimized.totalProviderTokens)
+      : null,
+  };
+
+  return {
+    classification: 'OBSERVED_PAIRED_RUN_DELTA',
+    comparable: comparabilityReasons.length === 0,
+    comparabilityReasons,
+    control,
+    optimized,
+    avoided,
+    reductionPct,
+    subscriptionQuotaEquivalent: null,
+    causalClaim: false,
   };
 }
