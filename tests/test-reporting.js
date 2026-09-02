@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -209,7 +209,7 @@ test('replay: empty summaries dir exits 0', () => {
 
 // ── export.js ────────────────────────────────────────────────────────────────
 
-test('export md: writes a tokens-first markdown report', () => {
+test('export md: writes an evidence-labeled historical report', () => {
   const home = makeHomes();
   seedGlobalStats(home);
   const out = run('export.js', ['md'], home);
@@ -217,12 +217,13 @@ test('export md: writes a tokens-first markdown report', () => {
   const files = readdirSync(join(home.kco, 'exports')).filter(f => f.endsWith('.md'));
   assert.equal(files.length, 1);
   const md = readFileSync(join(home.kco, 'exports', files[0]), 'utf-8');
-  assert.match(md, /# KCO Context Optimizer Report/, md);
+  assert.match(md, /# KCO Historical Context Report/, md);
   assert.match(md, /150\.0K/, md);
+  assert.match(md, /ESTIMATED HISTORICAL HEURISTIC/, md);
   assert.ok(!md.includes('claude'), `Claude reference in export:\n${md}`);
 });
 
-test('export html: writes a branded HTML report', () => {
+test('export html: writes a branded evidence-labeled HTML report', () => {
   const home = makeHomes();
   seedGlobalStats(home);
   run('export.js', ['html'], home);
@@ -230,16 +231,18 @@ test('export html: writes a branded HTML report', () => {
   assert.equal(files.length, 1);
   const html = readFileSync(join(home.kco, 'exports', files[0]), 'utf-8');
   assert.match(html, /KCO Context Dashboard/, html);
+  assert.match(html, /ESTIMATED HISTORICAL HEURISTIC/, html);
   assert.ok(!html.includes('claude'), `Claude reference in HTML export`);
 });
 
 // ── report.js / roi.js / digest.js / simulate-savings.js ────────────────────
 
-test('report full: tokens-first, no "$" unconfigured', () => {
+test('report full: historical labels, no "$" unconfigured', () => {
   const home = makeHomes();
   seedGlobalStats(home);
   const out = run('report.js', ['full'], home);
-  assert.match(out, /KCO — TOKEN ROI REPORT/, out);
+  assert.match(out, /KCO — HISTORICAL CONTEXT OPPORTUNITY REPORT/, out);
+  assert.match(out, /Estimated historical unused-read volume/, out);
   assert.match(out, /150\.0K/, out);
   assert.ok(!out.includes('$'), `unexpected "$" in report:\n${out}`);
 });
@@ -251,32 +254,36 @@ test('report full: cost appendix appears when pricing configured', () => {
   const out = run('report.js', ['full'], home);
   assert.match(out, /COST APPENDIX/, out);
   assert.ok(out.includes('$'), `expected "$" in report:\n${out}`);
+  assert.match(out, /USER-CONFIGURED RATE ONLY/, out);
 });
 
-test('roi: per-model table from session data, tokens-first', () => {
+test('roi: per-model historical opportunity table, tokens-first', () => {
   const home = makeHomes();
   seedSession(home);
   const out = run('roi.js', [], home);
-  assert.match(out, /KCO — Return on Investment Report/, out);
-  assert.match(out, /Monthly Savings by Model/, out);
+  assert.match(out, /KCO — Historical Optimization Opportunity Report/, out);
+  assert.match(out, /Historical opportunity by model/, out);
+  assert.match(out, /Estimated historical unused-read volume\/session/, out);
   assert.match(out, /k3/, out);
   assert.ok(!out.includes('Haiku') && !out.includes('Sonnet') && !out.includes('Opus'),
     `Claude model names in roi output:\n${out}`);
 });
 
-test('digest: efficiency score renders, no "$" unconfigured', () => {
+test('digest: efficiency score renders with historical evidence label', () => {
   const home = makeHomes();
   seedSession(home);
   const out = run('digest.js', ['7'], home, { KCO_QUIET: '1' });
   assert.match(out, /KCO WEEKLY CONTEXT EFFICIENCY DIGEST/, out);
   assert.match(out, /EFFICIENCY SCORE/, out);
+  assert.match(out, /Estimated historical unused-read volume/, out);
   assert.ok(!out.includes('$'), `unexpected "$" in digest:\n${out}`);
 });
 
-test('simulate-savings: computes retroactive savings from fixtures', () => {
+test('simulate-savings: reports historical avoidable-read heuristic from fixtures', () => {
   const home = makeHomes();
   seedSession(home);
   const out = run('simulate-savings.js', [], home);
   assert.match(out, /KCO SMART READ CACHE — RETROACTIVE ANALYSIS/, out);
-  assert.match(out, /Tokens that would have been saved: 2\.0K/, out);
+  assert.match(out, /Estimated historical avoidable-read volume: 2\.0K/, out);
+  assert.match(out, /not the runtime blocked-read savings ledger/, out);
 });
