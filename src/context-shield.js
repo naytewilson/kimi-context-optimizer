@@ -1,18 +1,11 @@
 #!/usr/bin/env node
 
 /**
- * ContextShield v1.0 (KCO — Kimi Code port)
+ * ContextShield v1.1 — advisory historical-read guard for Kimi Code.
  *
- * PreToolUse(Read) hook that protects against wasteful file reads.
- * Checks historical patterns and warns before loading known-waste files.
- * Suggests alternatives: Grep instead of Read, offset/limit for large files.
- *
- * Kimi protocol notes (see docs/hook-payloads.md):
- *   - Read tool input uses `path` (NOT Claude's `file_path`).
- *   - The shield NEVER blocks — warnings are advisory only, emitted on stdout
- *     via emitNotice() (rate-limited by the per-session notices ledger).
- *   - CLI mode (`node src/context-shield.js suggest|apply`) turns observed
- *     waste into permanent .contextignore rules.
+ * Supports both current ReadFile and legacy Read payloads through the shared
+ * hook normalizer. Historical token figures are explicitly estimates of prior
+ * read volume; they are not promoted to proven KCO savings.
  */
 
 import { basename, join, relative } from 'path';
@@ -21,7 +14,9 @@ import {
   PATTERNS_FILE,
   formatTokens, loadJSON, ensureDataDirs
 } from './utils.js';
-import { isMainModule, runHook, resolvePayloadPath } from './hook-io.js';
+import {
+  isMainModule, runHook, resolvePayloadPath, normalizeHookPayload,
+} from './hook-io.js';
 import { emitNotice } from './notices.js';
 
 ensureDataDirs();
@@ -36,23 +31,12 @@ function getProjectPatterns(patterns, projectRoot) {
 }
 
 function findProjectForPath(patterns, filePath) {
-  for (const key of Object.keys(patterns.projects)) {
-    if (key !== '_global' && filePath.startsWith(key)) {
-      return key;
-    }
+  for (const key of Object.keys(patterns.projects || {})) {
+    if (key !== '_global' && filePath.startsWith(key)) return key;
   }
   return null;
 }
 
-// ── .contextignore suggestions (close the loop: observation → rule) ─────────
-// The shield WARNS about files wasted in 3+ sessions; this turns those
-// observations into permanent .contextignore rules so the waste stops for good.
-
-/**
- * Build suggestion list from historical waste patterns. Pure — for tests.
- * Returns [{ pattern, sessions, tokens }] sorted by tokens wasted, deduped
- * against lines already present in existingIgnore (array of pattern strings).
- */
 export function buildIgnoreSuggestions(patterns, projectRoot, existingIgnore = [], minSessions = 3) {
   const existing = new Set(existingIgnore.map(l => l.trim()).filter(Boolean));
   const out = [];
@@ -81,21 +65,28 @@ function suggestOrApply(mode) {
   const suggestions = buildIgnoreSuggestions(patterns, cwd, readIgnoreLines(cwd));
 
   if (!suggestions.length) {
-    console.log('\n  No .contextignore candidates yet — nothing was wasted in 3+ sessions');
-    console.log('  (or the waste files are already ignored). Keep working; patterns accrue.\n');
+    console.log('\n  No .contextignore candidates yet — nothing was unused in 3+ sessions');
+    console.log('  (or the recurring-read files are already ignored).\n');
     return;
   }
 
   const total = suggestions.reduce((s, x) => s + x.tokens, 0);
-  console.log(`\n  .CONTEXTIGNORE ${mode === 'apply' ? 'APPLIED' : 'SUGGESTIONS'} — ${suggestions.length} file(s), ~${formatTokens(total)} tokens/session saveable`);
+  console.log(
+    `\n  .CONTEXTIGNORE ${mode === 'apply' ? 'APPLIED' : 'SUGGESTIONS'} — ` +
+    `${suggestions.length} file(s), ~${formatTokens(total)} estimated historical read volume/session`
+  );
   console.log('  ' + '─'.repeat(60));
   for (const s of suggestions) {
-    console.log(`  ${s.pattern.padEnd(44)} wasted in ${s.sessions} sessions (~${formatTokens(s.tokens)})`);
+    console.log(
+      `  ${s.pattern.padEnd(44)} unused in ${s.sessions} sessions ` +
+      `(~${formatTokens(s.tokens)} estimated historical read volume)`
+    );
   }
 
   if (mode === 'apply') {
     const file = join(cwd, '.contextignore');
-    const block = `\n# Added by /kco-shield apply — files unused in 3+ sessions (${new Date().toISOString().slice(0, 10)})\n` +
+    const block =
+      `\n# Added by /kco-shield apply — files unused in 3+ sessions (${new Date().toISOString().slice(0, 10)})\n` +
       suggestions.map(s => s.pattern).join('\n') + '\n';
     appendFileSync(file, block);
     console.log(`\n  ✓ Appended ${suggestions.length} pattern(s) to ${file}`);
@@ -105,32 +96,33 @@ function suggestOrApply(mode) {
   }
 }
 
-// ── Hook mode ────────────────────────────────────────────────────────────────
+function isTargetedRead(originalInput = {}) {
+  if (Number.isFinite(originalInput.line_offset) && originalInput.line_offset !== 1) return true;
+  if (Number.isFinite(originalInput.n_lines) && originalInput.n_lines < 1000) return true;
+  if (Number.isFinite(originalInput.offset) && originalInput.offset !== 0) return true;
+  if (Number.isFinite(originalInput.limit) && originalInput.limit < 1000) return true;
+  return false;
+}
 
 async function hookMain(payload) {
   if (payload.hook_event_name !== 'PreToolUse') return;
 
-  const toolName = payload.tool_name || '';
-  const toolInput = payload.tool_input || {};
+  const originalInput = payload.tool_input && typeof payload.tool_input === 'object'
+    ? payload.tool_input : {};
+  const event = normalizeHookPayload(payload);
+  if (event.tool_name !== 'Read') return;
 
-  // Only shield Read operations
-  if (toolName !== 'Read') return;
-
-  // Kimi Read input uses `path` (Claude used `file_path`).
-  const filePath = resolvePayloadPath(payload, toolInput.path);
+  const toolInput = event.tool_input || {};
+  const filePath = resolvePayloadPath(event, toolInput.path);
   if (!filePath || filePath.startsWith('/dev/') || filePath.startsWith('/proc/')) return;
 
-  const sessionId = payload.session_id || 'unknown';
+  const sessionId = event.session_id || 'unknown';
   const patterns = loadPatterns();
   const projectRoot = findProjectForPath(patterns, filePath);
   const proj = getProjectPatterns(patterns, projectRoot);
 
-  // ── Observation → rule: suggest .contextignore once per session ────────────
-  // The shield already KNOWS which files were read-but-unused in 3+ sessions;
-  // turning them into .contextignore rules stops that waste permanently.
-  // Only interrupts when the recurring waste is real money (≥30K tokens/session).
   try {
-    const cwd = payload.cwd || process.cwd();
+    const cwd = event.cwd || process.cwd();
     const ignoreSuggestions = buildIgnoreSuggestions(patterns, cwd, readIgnoreLines(cwd));
     const totalWaste = ignoreSuggestions.reduce((s, x) => s + x.tokens, 0);
     if (ignoreSuggestions.length && totalWaste >= 30_000) {
@@ -138,86 +130,68 @@ async function hookMain(payload) {
       emitNotice(sessionId, {
         kind: 'shield:ignore-suggest',
         text:
-          `[context-shield] ${ignoreSuggestions.length} file(s) in this project were read but never used in 3+ sessions ` +
-          `(~${formatTokens(totalWaste)} tokens/session recurring). Top: ${top}. ` +
-          `Run /kco-shield apply to add them to .contextignore for good.`,
+          `[context-shield] ${ignoreSuggestions.length} file(s) were read but never used in 3+ sessions ` +
+          `(~${formatTokens(totalWaste)} estimated historical read volume/session). Top: ${top}. ` +
+          `Run /kco-shield apply to stop those full reads.`,
       });
     }
-  } catch { /* suggestion is best-effort — never block the Read */ }
+  } catch { /* best effort; shield never blocks */ }
 
   const warnings = [];
-
-  // ── Check 1: Known waste file (3+ sessions wasted) ──
   const wasteData = proj.wastedReads[filePath];
   if (wasteData && wasteData.sessions >= 5) {
     warnings.push(
       `[context-shield] ${basename(filePath)} went unused in ${wasteData.sessions} past sessions ` +
-      `(~${formatTokens(wasteData.totalTokensWasted)} tokens). ` +
-      `Try Grep to find what you need instead of reading the whole file.`
+      `(~${formatTokens(wasteData.totalTokensWasted)} estimated historical read volume). ` +
+      `Try Grep instead of reading the whole file.`
     );
   } else if (wasteData && wasteData.sessions >= 3) {
     warnings.push(
       `[context-shield] Heads up: ${basename(filePath)} wasn't needed in ${wasteData.sessions} past sessions. ` +
-      `Try Grep or offset/limit to grab just what you need.`
+      `Try Grep or a targeted ReadFile line_offset/n_lines range.`
     );
   }
 
-  // ── Check 2: Large file without offset/limit ──
-  // Skip warning when the file has historically been useful (e.g. schemas,
-  // type defs, specs) — it's read-only by nature but legitimately needed.
-  const isPartial = !!(toolInput.offset || toolInput.limit);
-  if (!isPartial) {
+  if (!isTargetedRead(originalInput)) {
     const freqData = proj.fileFrequency[filePath];
     if (freqData && freqData.sessions >= 2) {
-      const editRate = freqData.totalEdits / freqData.totalReads;
+      const editRate = freqData.totalReads > 0 ? freqData.totalEdits / freqData.totalReads : 0;
       const usefulRatio = (freqData.usefulness || 0) / freqData.sessions;
-      const isLegitReadOnly = usefulRatio >= 0.5; // useful in half+ of sessions
+      const isLegitReadOnly = usefulRatio >= 0.5;
       if (editRate < 0.1 && freqData.totalReads >= 5 && !isLegitReadOnly) {
         warnings.push(
           `[context-shield] ${basename(filePath)}: read ${freqData.totalReads}x but edited only ${freqData.totalEdits}x ` +
-          `across ${freqData.sessions} sessions. Reading less = faster results — try offset/limit!`
+          `across ${freqData.sessions} sessions. Prefer a targeted ReadFile range.`
         );
       }
     }
   }
 
-  // ── Check 3: File frequently read with co-occurring files ──
   if (proj.coOccurrence[filePath]) {
     const related = Object.entries(proj.coOccurrence[filePath])
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
       .filter(([, count]) => count >= 3);
-
     if (related.length > 0) {
       const names = related.map(([p]) => basename(p)).join(', ');
       warnings.push(
-        `[context-shield] Pro tip: ${basename(filePath)} is often edited with: ${names}. ` +
-        `Load them together to save time!`
+        `[context-shield] ${basename(filePath)} is often edited with: ${names}. ` +
+        `If they are needed, load the relevant ranges together.`
       );
     }
   }
 
-  // Emit at most one shield tip per file, gated by the session noise budget —
-  // these are pure FYI, so they must never crowd out Kimi's working context.
   if (warnings.length) {
     emitNotice(sessionId, { kind: `shield:${basename(filePath)}`, text: warnings[0] });
   }
-
-  // ContextShield never blocks — only warns; exiting 0 allows the Read.
 }
-
-// ── Entry point ──────────────────────────────────────────────────────────────
 
 if (isMainModule(import.meta.url)) {
   const action = process.argv[2];
   if (action === 'suggest' || action === 'apply') {
-    try {
-      suggestOrApply(action);
-    } catch {
-      process.exit(0); // fail open
-    }
+    try { suggestOrApply(action); }
+    catch { process.exit(0); }
   } else {
-    // Default: hook mode (read JSON event from stdin, fail-open).
     runHook(hookMain);
   }
 }
