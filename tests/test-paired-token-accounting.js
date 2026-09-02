@@ -66,6 +66,29 @@ test('paired accounting uses Kimi total-input identity and preserves output trad
   assert.equal(d.causalClaim, false);
 });
 
+test('paired accounting reconstructs total input from Kimi components when aggregate is unavailable', () => {
+  const control = usage({
+    totalInput: 400,
+    totalCacheRead: 500,
+    totalCacheCreation: 100,
+    totalInputSide: 0,
+    totalOutput: 100,
+  });
+  const optimized = usage({
+    totalInput: 300,
+    totalCacheRead: 350,
+    totalCacheCreation: 50,
+    totalInputSide: 0,
+    totalOutput: 80,
+  });
+  const d = computeObservedPairedUsageDelta(control, optimized);
+
+  assert.equal(d.comparable, true);
+  assert.equal(d.control.inputTokens, 1000);
+  assert.equal(d.optimized.inputTokens, 700);
+  assert.equal(d.avoided.inputTokens, 300);
+});
+
 test('paired accounting never clamps a regression into fake savings', () => {
   const control = usage({ totalInputSide: 1000, totalOutput: 100 });
   const optimized = usage({ totalInputSide: 1200, totalOutput: 150 });
@@ -78,7 +101,7 @@ test('paired accounting never clamps a regression into fake savings', () => {
   assert.equal(d.reductionPct.outputTokens, -50);
 });
 
-test('different models are arithmetically measurable but not a valid savings comparison', () => {
+test('different models are arithmetically measurable but percentages are withheld as incomparable', () => {
   const control = usage({ model: 'k3', totalInputSide: 1000, totalOutput: 100 });
   const optimized = usage({ model: 'k3-256k', totalInputSide: 700, totalOutput: 90 });
   const d = computeObservedPairedUsageDelta(control, optimized);
@@ -86,6 +109,46 @@ test('different models are arithmetically measurable but not a valid savings com
   assert.equal(d.avoided.inputTokens, 300);
   assert.equal(d.comparable, false);
   assert.ok(d.comparabilityReasons.some((x) => /model mismatch/i.test(x)));
+  assert.equal(d.reductionPct.inputTokens, null);
+  assert.equal(d.reductionPct.outputTokens, null);
+  assert.equal(d.reductionPct.totalProviderTokens, null);
+});
+
+test('missing model identity makes the pair non-comparable and withholds percentages', () => {
+  const control = usage({ model: null, totalInputSide: 1000, totalOutput: 100 });
+  const optimized = usage({ model: 'k3', totalInputSide: 700, totalOutput: 90 });
+  const d = computeObservedPairedUsageDelta(control, optimized);
+
+  assert.equal(d.avoided.inputTokens, 300, 'raw arithmetic delta remains visible');
+  assert.equal(d.comparable, false);
+  assert.ok(d.comparabilityReasons.some((x) => /model identity/i.test(x)));
+  assert.equal(d.reductionPct.inputTokens, null);
+  assert.equal(d.reductionPct.outputTokens, null);
+  assert.equal(d.reductionPct.totalProviderTokens, null);
+});
+
+test('inconsistent total-input aggregate and Kimi components makes the pair non-comparable', () => {
+  const control = usage({
+    totalInput: 400,
+    totalCacheRead: 500,
+    totalCacheCreation: 100,
+    totalInputSide: 999,
+    totalOutput: 100,
+  });
+  const optimized = usage({
+    totalInput: 300,
+    totalCacheRead: 350,
+    totalCacheCreation: 50,
+    totalInputSide: 700,
+    totalOutput: 80,
+  });
+  const d = computeObservedPairedUsageDelta(control, optimized);
+
+  assert.equal(d.comparable, false);
+  assert.ok(d.comparabilityReasons.some((x) => /input.*identity|aggregate.*component/i.test(x)));
+  assert.equal(d.reductionPct.inputTokens, null);
+  assert.equal(d.reductionPct.outputTokens, null);
+  assert.equal(d.reductionPct.totalProviderTokens, null);
 });
 
 test('missing provider usage rows makes the pair non-comparable', () => {
