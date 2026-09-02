@@ -11,8 +11,6 @@
 import { isAbsolute, resolve } from 'node:path';
 import { isMainModule } from './utils.js';
 
-// ── stdin ────────────────────────────────────────────────────────────────────
-
 export function readPayload() {
   return new Promise((resolvePayload) => {
     let raw = '';
@@ -35,8 +33,6 @@ export function readPayload() {
   });
 }
 
-// ── Responses ────────────────────────────────────────────────────────────────
-
 export function block(reason) {
   console.error(reason);
   process.exit(2);
@@ -45,8 +41,6 @@ export function block(reason) {
 export function advise(text) {
   process.stdout.write(String(text) + '\n');
 }
-
-// ── Tool compatibility ──────────────────────────────────────────────────────
 
 const TOOL_ALIASES = Object.freeze({
   ReadFile: 'Read',
@@ -59,12 +53,10 @@ const TOOL_ALIASES = Object.freeze({
   Bash: 'Bash',
 });
 
-/** Canonicalize current and legacy Kimi built-in names for internal logic. */
 export function canonicalToolName(name) {
   return TOOL_ALIASES[name] || name || '';
 }
 
-/** Current edit/write hooks commonly use file_path; older captures used path. */
 export function getToolPath(toolInput) {
   if (!toolInput || typeof toolInput !== 'object') return '';
   const p = toolInput.path ?? toolInput.file_path;
@@ -72,8 +64,14 @@ export function getToolPath(toolInput) {
 }
 
 /**
- * Normalize ReadFile's current line_offset/n_lines and legacy offset/limit to a
- * zero-based [offset,end) range. `totalLines` is used for negative line_offset.
+ * Normalize current ReadFile line_offset/n_lines and legacy offset/limit to a
+ * zero-based requested [offset,end) range.
+ *
+ * Positive offsets are deliberately NOT clamped to EOF. An out-of-range request
+ * must remain distinguishable from an already-covered range so KCO does not
+ * intercept a tool call that Kimi itself should answer/error. totalLines is
+ * used only to resolve negative line_offset and to shrink an in-file request
+ * to the amount that can actually be returned.
  */
 export function getReadRange(toolInput = {}, totalLines = 0) {
   const hasCurrentOffset = Number.isFinite(toolInput.line_offset);
@@ -93,15 +91,12 @@ export function getReadRange(toolInput = {}, totalLines = 0) {
   else if (Number.isFinite(toolInput.limit)) limit = Math.max(0, Math.trunc(toolInput.limit));
   else limit = 1000;
 
-  if (totalLines > 0) {
-    offset = Math.min(offset, totalLines);
+  if (totalLines > 0 && offset < totalLines) {
     limit = Math.min(limit, Math.max(0, totalLines - offset));
   }
 
   return { offset, limit, end: offset + limit };
 }
-
-// ── Payload accessors ────────────────────────────────────────────────────────
 
 export function resolvePayloadPath(payload, p) {
   if (!p || typeof p !== 'string') return '';
@@ -122,8 +117,6 @@ export function getPromptText(payload) {
   }
   return '';
 }
-
-// ── Lifecycle ────────────────────────────────────────────────────────────────
 
 export { isMainModule };
 
