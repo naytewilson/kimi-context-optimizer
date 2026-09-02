@@ -1,58 +1,48 @@
 #!/usr/bin/env node
 
 /**
- * Notice ledger — keeps the optimizer from polluting Kimi's context.
+ * Notice ledger + pending-delivery queue.
  *
- * A context optimizer that narrates on every tool call spends the very tokens
- * it claims to save. This module enforces a per-session budget on the plugin's
- * own advisory output and records how many tokens it injected, so the dashboard
- * can report NET savings (saved − overhead) and auto-silence if it ever goes
- * negative.
- *
- * Rules (pure, in shouldEmit):
- *   - priority 'critical'  → always allowed (e.g. "90% budget → compact now")
- *   - priority 'normal'    → at most once per `kind`, and only while the session
- *                            is under `cap` total advisory lines (default 4)
- *
- * The hot-path hooks (tracker, budget, context-shield) gate every advisory
- * through this. read-cache block messages are NOT counted here — they replace a
- * far larger read, so they're accounted as savings, not overhead.
- *
- * Pure logic is exported for tests; load/save wrap it with disk I/O.
+ * KCO budgets its own advisory output so the optimizer cannot become a context
+ * pollutant. Current Kimi Code documents PostToolUse as observation-only while
+ * UserPromptSubmit can append returned text to model context, so actionable
+ * PostToolUse notices are queued and delivered on the next user prompt.
  */
 
 import { join } from 'path';
 import { NOTICES_DIR, loadJSON, saveJSON, ensureDataDirs, estimateTokensFromString } from './utils.js';
 
 export const DEFAULT_NOTICE_CAP = 4;
+const MAX_PENDING_NOTICES = 16;
 
 export function emptyLedger() {
   return { count: 0, tokensInjected: 0, kinds: {} };
 }
 
-/** Decide whether a notice may be emitted, given the current ledger. Pure. */
+/** Decide whether a notice may be emitted/queued, given the current ledger. */
 export function shouldEmit(ledger, { kind, priority = 'normal', cap = DEFAULT_NOTICE_CAP } = {}) {
   if (priority === 'critical') return true;
   if (!kind) return false;
-  if (ledger.kinds[kind]) return false;     // already said this kind this session
-  if (ledger.count >= cap) return false;    // session noise budget exhausted
+  if (ledger.kinds[kind]) return false;
+  if (ledger.count >= cap) return false;
   return true;
 }
 
-/** Record that a notice was emitted (updates count, per-kind, injected tokens). Pure. */
+/** Record one advisory against KCO's own context budget. */
 export function recordEmit(ledger, { kind, text = '' }) {
-  const next = {
+  return {
     count: ledger.count + 1,
     tokensInjected: ledger.tokensInjected + estimateTokensFromString(text),
     kinds: { ...ledger.kinds, [kind]: (ledger.kinds[kind] || 0) + 1 },
   };
-  return next;
 }
-
-// ── I/O ───────────────────────────────────────────────────────────────────────
 
 function ledgerFile(sessionId) {
   return join(NOTICES_DIR, `${sessionId}.json`);
+}
+
+function pendingFile(sessionId) {
+  return join(NOTICES_DIR, `${sessionId}.pending.json`);
 }
 
 export function loadLedger(sessionId) {
@@ -65,12 +55,49 @@ export function saveLedger(sessionId, ledger) {
 }
 
 /**
- * Convenience for hooks: print `text` (advise() to stdout — Kimi injects hook
- * stdout into context as a <hook_result> block) only if the session noise
- * budget allows it, and record the cost. Returns true if it spoke.
- * `printFn` defaults to console.log (stdout → surfaces to Kimi as context).
+ * Queue an actionable advisory for delivery by the UserPromptSubmit hook.
+ * The noise ledger is charged at queue time so duplicate observation events do
+ * not create an unbounded pending backlog.
  */
-export function emitNotice(sessionId, { kind, text, priority = 'normal', cap = DEFAULT_NOTICE_CAP }, printFn = console.log) {
+export function queueNotice(
+  sessionId,
+  { kind, text, priority = 'normal', cap = DEFAULT_NOTICE_CAP } = {},
+) {
+  if (!sessionId || !text) return false;
+  const ledger = loadLedger(sessionId);
+  if (!shouldEmit(ledger, { kind, priority, cap })) return false;
+
+  ensureDataDirs();
+  const pending = loadJSON(pendingFile(sessionId)) || { items: [] };
+  const items = Array.isArray(pending.items) ? pending.items : [];
+  items.push({ kind, text, priority, queuedAt: new Date().toISOString() });
+  if (items.length > MAX_PENDING_NOTICES) items.splice(0, items.length - MAX_PENDING_NOTICES);
+  saveJSON(pendingFile(sessionId), { items });
+  saveLedger(sessionId, recordEmit(ledger, { kind, text }));
+  return true;
+}
+
+/** Return queued text exactly once. Empty queue => empty string. */
+export function flushPendingNotices(sessionId) {
+  if (!sessionId) return '';
+  const pending = loadJSON(pendingFile(sessionId));
+  const items = pending && Array.isArray(pending.items) ? pending.items : [];
+  if (!items.length) return '';
+  // Clear before returning. If a later hook fails, repeating stale directives is
+  // less safe than requiring a fresh observation to enqueue another one.
+  saveJSON(pendingFile(sessionId), { items: [] });
+  return items.map((item) => item && item.text).filter(Boolean).join('\n');
+}
+
+/**
+ * Immediate advisory for hook phases where stdout is intentionally consumed.
+ * PostToolUse callers that need model-visible delivery should use queueNotice().
+ */
+export function emitNotice(
+  sessionId,
+  { kind, text, priority = 'normal', cap = DEFAULT_NOTICE_CAP },
+  printFn = console.log,
+) {
   if (!sessionId || !text) return false;
   const ledger = loadLedger(sessionId);
   if (!shouldEmit(ledger, { kind, priority, cap })) return false;
