@@ -19,8 +19,6 @@ import { spawnSync } from 'node:child_process';
 const SRC = new URL('../src/', import.meta.url).pathname;
 const SESSION_ID = 'session_report-test-1';
 
-// ── Fixture helpers ──────────────────────────────────────────────────────────
-
 function makeHomes() {
   const kco = mkdtempSync(join(tmpdir(), 'kco-reporting-'));
   const kimi = mkdtempSync(join(tmpdir(), 'kco-reporting-kimi-'));
@@ -100,7 +98,7 @@ function seedWireFile(home, sid = SESSION_ID) {
   mkdirSync(wireDir, { recursive: true });
   const wirePath = join(wireDir, 'wire.jsonl');
   const records = [
-    { type: 'config.update', systemPrompt: 'x'.repeat(7400) }, // → ~2000 tokens
+    { type: 'config.update', systemPrompt: 'x'.repeat(7400) },
     { type: 'model', model: 'k3' },
     { type: 'step.end', timestamp: '2026-07-18T01:00:00.000Z', usage: { inputOther: 500, output: 20, inputCacheRead: 0, inputCacheCreation: 2000 } },
     { type: 'step.end', timestamp: '2026-07-18T01:01:00.000Z', usage: { inputOther: 800, output: 30, inputCacheRead: 2500, inputCacheCreation: 0 } },
@@ -119,35 +117,40 @@ function run(script, args, home, extraEnv = {}) {
 
 // ── dashboard.js ─────────────────────────────────────────────────────────────
 
-test('dashboard summary: token headline, NO "$" when pricing unconfigured', () => {
+test('dashboard summary: savings are explicitly estimated and not quota-equated', () => {
   const home = makeHomes();
   seedSession(home);
   const out = run('dashboard.js', ['summary', SESSION_ID], home);
-  assert.match(out, /KCO saved 8\.0K tokens this session/, out);
-  assert.match(out, /% of what the context would have held/, out);
+  assert.match(out, /Estimated net direct-input reduction: \+~8\.0K tokens/, out);
+  assert.match(out, /Counterfactual estimate: blocked reads ~8\.0K/, out);
+  assert.match(out, /Not replay-adjusted; not a direct percentage of Kimi subscription quota/, out);
+  assert.doesNotMatch(out, /context would have held/, out);
   assert.ok(!out.includes('$'), `unexpected "$" in output:\n${out}`);
 });
 
-test('dashboard summary: "$" appears when pricing is configured', () => {
+test('dashboard board: configured pricing is labeled as a configured-rate estimate, not savings truth', () => {
   const home = makeHomes();
   seedSession(home);
   writeFileSync(join(home.kco, 'config.json'), JSON.stringify({
     pricePerMillionInput: 3, pricePerMillionOutput: 15,
   }));
-  const out = run('dashboard.js', ['summary', SESSION_ID], home);
-  assert.match(out, /KCO saved/, out);
-  assert.ok(out.includes('$'), `expected "$" in output:\n${out}`);
+  const board = run('dashboard.js', ['board', SESSION_ID], home);
+  assert.ok(board.includes('$'), `expected configured price display:\n${board}`);
+  assert.match(board, /configured-rate estimate/, board);
+  const summary = run('dashboard.js', ['summary', SESSION_ID], home);
+  assert.doesNotMatch(summary, /~\$.*saved|saved.*\$/i, summary);
 });
 
-test('dashboard summary: real cache data from wire.jsonl (hit rate, cache breaks)', () => {
+test('dashboard summary: real cache data is usage telemetry, never called token savings', () => {
   const home = makeHomes();
   seedSession(home);
   seedWireFile(home);
   const out = run('dashboard.js', ['summary', SESSION_ID], home);
-  // wire: cacheRead 2500 of input side 500+800+2500+2000 = 5800 → 43%
   assert.match(out, /Prompt cache: 43% hit rate/, out);
-  assert.match(out, /2\.5K tokens served from cache/, out);
+  assert.match(out, /2\.5K cache-read input tokens observed/, out);
+  assert.match(out, /usage telemetry, not KCO savings/, out);
   assert.match(out, /Cache broke 1x/, out);
+  assert.doesNotMatch(out, /served from cache instead of fresh context/, out);
 });
 
 test('dashboard board: renders context bar, files, health without crashing', () => {
@@ -155,7 +158,7 @@ test('dashboard board: renders context bar, files, health without crashing', () 
   seedSession(home);
   const out = run('dashboard.js', ['board', SESSION_ID], home);
   assert.match(out, /KCO CONTEXT BOARD/, out);
-  assert.match(out, /42\.0K \/ /, out); // real contextTokens from budget state
+  assert.match(out, /42\.0K \/ /, out);
   assert.match(out, /2 failed calls/, out);
   assert.match(out, /1 delegations/, out);
   assert.ok(!out.includes('$'), `unexpected "$" in board:\n${out}`);
@@ -174,9 +177,8 @@ test('overhead: system-prompt size from a synthetic wire file', () => {
   const wirePath = seedWireFile(home);
   const out = run('overhead.js', [wirePath], home);
   assert.match(out, /KCO SESSION BASELINE OVERHEAD/, out);
-  // 7400 chars / 3.7 = 2000 tokens exactly
   assert.match(out, /System prompt \(exact\)\s+2\.0K tokens \(7,400 chars/, out);
-  assert.match(out, /k3/, out); // model from the wire
+  assert.match(out, /k3/, out);
   assert.match(out, /Core system prompt & tool schemas/, out);
   assert.ok(!out.includes('$'), `unexpected "$" in overhead output:\n${out}`);
 });
@@ -257,7 +259,7 @@ test('roi: per-model table from session data, tokens-first', () => {
   const out = run('roi.js', [], home);
   assert.match(out, /KCO — Return on Investment Report/, out);
   assert.match(out, /Monthly Savings by Model/, out);
-  assert.match(out, /k3/, out); // model alias from budget state
+  assert.match(out, /k3/, out);
   assert.ok(!out.includes('Haiku') && !out.includes('Sonnet') && !out.includes('Opus'),
     `Claude model names in roi output:\n${out}`);
 });
@@ -276,7 +278,5 @@ test('simulate-savings: computes retroactive savings from fixtures', () => {
   seedSession(home);
   const out = run('simulate-savings.js', [], home);
   assert.match(out, /KCO SMART READ CACHE — RETROACTIVE ANALYSIS/, out);
-  // b.md: 2 fullReads, 0 edits, not edited → allowed 1, redundant 1 → 2000 saved
-  // a.js: 3 fullReads, 2 edits, wasEdited → allowed 3, redundant 0
   assert.match(out, /Tokens that would have been saved: 2\.0K/, out);
 });
