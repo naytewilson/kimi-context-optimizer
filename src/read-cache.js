@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Read Cache v2.1 — Smart Context-Aware Blocking (KCO — Kimi Code port)
+ * Read Cache v2.2 — quota-aware redundant-read blocking.
  *
- * PreToolUse hook that prevents redundant file reads while giving the AI
- * enough navigational context to work effectively.
- *
- * Staleness is evidence-driven in quota mode: file modification, compaction,
- * process/agent isolation, or substantial context displacement can allow a
- * reread. Wall-clock age alone is disabled by default because elapsed time does
- * not remove an unchanged file from the model context. Users can opt back in
- * with readCacheTimeStalenessMs or KCO_STALE_TIME_MS.
+ * Savings accounting is deliberately conservative:
+ *   - a blocked read's counterfactual token volume is ESTIMATED from the actual
+ *     requested characters on disk, never from average line length alone;
+ *   - every model-visible block reason is counted as KCO overhead;
+ *   - replay amplification is NOT multiplied into claimed savings;
+ *   - current and legacy Kimi tool/payload names are normalized centrally.
  */
 
 import { basename, extname, join } from 'path';
@@ -19,10 +17,17 @@ import {
   READ_CACHE_DIR,
   estimateTokens, formatTokens, loadJSON, saveJSON, ensureDataDirs,
   loadConfig, getEffectiveBudget, getFileLines, shouldSkipFile,
+  getCalibrationFactor,
 } from './utils.js';
-import { block, advise, isMainModule, runHook, resolvePayloadPath } from './hook-io.js';
+import {
+  block, isMainModule, runHook, resolvePayloadPath,
+  canonicalToolName, getToolPath, getReadRange,
+} from './hook-io.js';
 import { isContextIgnored } from './contextignore.js';
 import { parseFileStructure, formatDigest } from './file-digest.js';
+import {
+  estimateReadRangeTokens, estimateVisibleTextTokens,
+} from './savings-accounting.js';
 
 ensureDataDirs();
 
@@ -66,13 +71,27 @@ function getStaleThresholds() {
 
 // ── Cache I/O ─────────────────────────────────────────────────────────────────
 
+function normalizeCache(cache) {
+  const c = cache || {};
+  c.files ||= {};
+  c.totalTokensSaved = Number.isFinite(c.totalTokensSaved) ? c.totalTokensSaved : 0; // legacy alias
+  c.grossAvoidedReadTokensEstimated = Number.isFinite(c.grossAvoidedReadTokensEstimated)
+    ? c.grossAvoidedReadTokensEstimated
+    : c.totalTokensSaved;
+  c.blockOverheadTokensEstimated = Number.isFinite(c.blockOverheadTokensEstimated)
+    ? c.blockOverheadTokensEstimated
+    : 0;
+  c.blockedReads = Number.isFinite(c.blockedReads) ? c.blockedReads : 0;
+  return c;
+}
+
 function loadCache(sessionId) {
   const file = join(READ_CACHE_DIR, `${sessionId}.json`);
-  return loadJSON(file) || { files: {}, totalTokensSaved: 0, blockedReads: 0 };
+  return normalizeCache(loadJSON(file));
 }
 
 function saveCache(sessionId, cache) {
-  saveJSON(join(READ_CACHE_DIR, `${sessionId}.json`), cache);
+  saveJSON(join(READ_CACHE_DIR, `${sessionId}.json`), normalizeCache(cache));
 }
 
 // ── Range coverage ────────────────────────────────────────────────────────────
@@ -83,16 +102,10 @@ function isRangeCovered(ranges, offset, end) {
   const merged = [sorted[0]];
   for (let i = 1; i < sorted.length; i++) {
     const last = merged[merged.length - 1];
-    if (sorted[i][0] <= last[1]) {
-      last[1] = Math.max(last[1], sorted[i][1]);
-    } else {
-      merged.push(sorted[i]);
-    }
+    if (sorted[i][0] <= last[1]) last[1] = Math.max(last[1], sorted[i][1]);
+    else merged.push(sorted[i]);
   }
-  for (const [s, e] of merged) {
-    if (s <= offset && e >= end) return true;
-  }
-  return false;
+  return merged.some(([s, e]) => s <= offset && e >= end);
 }
 
 // ── Staleness detection ───────────────────────────────────────────────────────
@@ -115,19 +128,11 @@ function checkStaleness(cache, filePath) {
   }
 
   if (newerTokens >= tokTh) {
-    return {
-      stale: true,
-      reason: `${formatTokens(newerTokens)} tokens of other files loaded since last read`
-    };
+    return { stale: true, reason: `${formatTokens(newerTokens)} tokens of other files loaded since last read` };
   }
-
   if (newerFiles >= fileTh) {
-    return {
-      stale: true,
-      reason: `${newerFiles} other files loaded since last read`
-    };
+    return { stale: true, reason: `${newerFiles} other files loaded since last read` };
   }
-
   if (isReadCacheTimeStale({
     readAtMs: readTime,
     nowMs: Date.now(),
@@ -135,12 +140,8 @@ function checkStaleness(cache, filePath) {
     readCacheTimeStalenessMs: timeMs,
   })) {
     const mins = Math.round((Date.now() - readTime) / 60_000);
-    return {
-      stale: true,
-      reason: `${mins} min since last read (time expiry explicitly enabled)`
-    };
+    return { stale: true, reason: `${mins} min since last read (time expiry explicitly enabled)` };
   }
-
   return { stale: false, reason: '' };
 }
 
@@ -149,11 +150,19 @@ export const _staleConfig = getStaleThresholds;
 // ── Big-file first-read nudge ─────────────────────────────────────────────────
 
 export function shouldNudgeBigFile({ entry, hasOffset, hasLimit, lines, threshold, enabled }) {
-  if (!enabled) return false;
-  if (entry) return false;
-  if (hasOffset || hasLimit) return false;
-  if (!lines || lines < threshold) return false;
-  return true;
+  if (!enabled || entry || hasOffset || hasLimit) return false;
+  return !!lines && lines >= threshold;
+}
+
+function isTargetedRead(toolInput = {}) {
+  const currentOffset = Number.isFinite(toolInput.line_offset) && toolInput.line_offset !== 1 && toolInput.line_offset !== 0;
+  const legacyOffset = Number.isFinite(toolInput.offset) && toolInput.offset !== 0;
+  const currentLimit = Number.isFinite(toolInput.n_lines) && toolInput.n_lines < 1000;
+  const legacyLimit = Number.isFinite(toolInput.limit) && toolInput.limit < 1000;
+  return {
+    hasOffset: currentOffset || legacyOffset,
+    hasLimit: currentLimit || legacyLimit,
+  };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -163,12 +172,23 @@ function getMtime(filePath) {
 }
 
 function trimPpids(ppids, max = 20) {
-  const unique = [...new Set(ppids)];
-  return unique.slice(-max);
+  return [...new Set(ppids)].slice(-max);
 }
 
-function allow(sessionId, cache, filePath, mtime, offset, end, ext, ppid, logMsg) {
-  const tokens = estimateTokens(end - offset, ext);
+function estimateRange(filePath, offset, end) {
+  return estimateReadRangeTokens(filePath, {
+    offset,
+    limit: Math.max(0, end - offset),
+    calibrationFactor: getCalibrationFactor(),
+  }).tokensEstimated;
+}
+
+function accountBlockOverhead(cache, reason) {
+  cache.blockOverheadTokensEstimated += estimateVisibleTextTokens(reason, getCalibrationFactor());
+}
+
+function allow(sessionId, cache, filePath, mtime, offset, end, ppid) {
+  const tokens = estimateRange(filePath, offset, end);
   const existing = cache.files[filePath];
   cache.files[filePath] = {
     mtime,
@@ -177,16 +197,13 @@ function allow(sessionId, cache, filePath, mtime, offset, end, ext, ppid, logMsg
     readAt: new Date().toISOString(),
     readAtMs: Date.now(),
     ranges: [[offset, end]],
-    ppids: trimPpids(existing ? [...(existing.ppids || []), ppid] : [ppid])
+    ppids: trimPpids(existing ? [...(existing.ppids || []), ppid] : [ppid]),
   };
   saveCache(sessionId, cache);
-  if (logMsg) advise(logMsg);
   return 'allowed';
 }
 
-// ── Build digest block message ────────────────────────────────────────────────
-
-function buildBlockMessage(filePath, entry, wasPartialRequest) {
+function buildBlockMessage(filePath, entry, wasPartialRequest, currentSyntax) {
   const name = basename(filePath);
   let landmarks, digest;
   try {
@@ -200,13 +217,14 @@ function buildBlockMessage(filePath, entry, wasPartialRequest) {
   let suggestion = '';
   if (landmarks.length > 1) {
     const mid = landmarks[Math.floor(landmarks.length / 2)];
-    suggestion = `\n→ Example: Read with offset=${mid.line - 1}, limit=50 to see ${mid.label}`;
+    suggestion = currentSyntax
+      ? `\n→ ReadFile line_offset=${mid.line}, n_lines=50 for ${mid.label}`
+      : `\n→ Read offset=${mid.line - 1}, limit=50 for ${mid.label}`;
   }
-
   const partialHint = wasPartialRequest ? ' This section is already loaded.' : '';
   return (
     `⛔ [read-cache] Already loaded ${name} this session ` +
-    `(${entry.lines} lines, ~${formatTokens(entry.tokens)} tokens).` +
+    `(${entry.lines} lines, ~${formatTokens(entry.tokens)} estimated tokens).` +
     `${partialHint} File unchanged.\n${digest}${suggestion}`
   );
 }
@@ -216,32 +234,20 @@ function buildBlockMessage(filePath, entry, wasPartialRequest) {
 async function main(event) {
   if (!event || !event.hook_event_name) return;
 
-  if (event.hook_event_name === 'PreCompact') {
+  if (event.hook_event_name === 'PreCompact' || event.hook_event_name === 'PostCompact') {
     const sessionId = event.session_id || 'unknown';
     const cache = loadCache(sessionId);
-    const fileCount = Object.keys(cache.files).length;
-    if (fileCount > 0) {
-      cache.files = {};
-      saveCache(sessionId, cache);
-      advise(`[read-cache] Context compacted — ${fileCount} file(s) cleared from cache. Fresh reads welcome!`);
-    }
-    return;
-  }
-
-  if (event.hook_event_name === 'PostCompact') {
-    const sessionId = event.session_id || 'unknown';
-    const cache = loadCache(sessionId);
-    const fileCount = Object.keys(cache.files).length;
-    if (fileCount > 0) {
+    if (Object.keys(cache.files).length > 0) {
       cache.files = {};
       saveCache(sessionId, cache);
     }
-    advise(`[read-cache] Compaction finished — cache cleared (${fileCount} file(s)). Fresh reads welcome!`);
+    // Silent by design: compaction already happened; narrating it spends more context.
     return;
   }
 
-  if (event.hook_event_name === 'PostToolUse' && (event.tool_name === 'Edit' || event.tool_name === 'Write')) {
-    const filePath = resolvePayloadPath(event, (event.tool_input || {}).path);
+  const canonical = canonicalToolName(event.tool_name || '');
+  if (event.hook_event_name === 'PostToolUse' && (canonical === 'Edit' || canonical === 'Write')) {
+    const filePath = resolvePayloadPath(event, getToolPath(event.tool_input || {}));
     if (filePath) {
       const sessionId = event.session_id || 'unknown';
       const cache = loadCache(sessionId);
@@ -253,32 +259,28 @@ async function main(event) {
     return;
   }
 
-  if (event.hook_event_name !== 'PreToolUse') return;
-  if ((event.tool_name || '') !== 'Read') return;
+  if (event.hook_event_name !== 'PreToolUse' || canonical !== 'Read') return;
 
   const toolInput = event.tool_input || {};
-  const filePath = resolvePayloadPath(event, toolInput.path);
+  const filePath = resolvePayloadPath(event, getToolPath(toolInput));
   const sessionId = event.session_id || 'unknown';
   const ppid = process.ppid;
-
   if (!filePath || filePath.startsWith('/dev/') || filePath.startsWith('/proc/')) return;
+
+  const cache = loadCache(sessionId);
 
   const ignoreResult = isContextIgnored(filePath);
   if (ignoreResult.ignored) {
-    const reason = `🚫 [contextignore] ${basename(filePath)} matches pattern "${ignoreResult.pattern}" in .contextignore. ` +
-      `Use Grep to search inside, or remove the pattern from .contextignore to allow reading.`;
+    const reason = `🚫 [contextignore] ${basename(filePath)} matches "${ignoreResult.pattern}". Use Grep, or remove the rule to read it.`;
+    accountBlockOverhead(cache, reason);
+    cache.policyBlocks = (cache.policyBlocks || 0) + 1;
+    saveCache(sessionId, cache);
     block(reason);
   }
 
-  const offset = toolInput.offset || 0;
-  let limit = toolInput.limit || 1000;
-  if (!toolInput.limit) {
-    const actualLines = getFileLines(filePath);
-    if (actualLines > 0) limit = Math.max(1, Math.min(limit, actualLines - offset));
-  }
-  const end = offset + limit;
+  const totalLines = getFileLines(filePath);
+  const { offset, limit, end } = getReadRange(toolInput, totalLines);
   const ext = extname(filePath);
-  const cache = loadCache(sessionId);
   const entry = cache.files[filePath];
   if (entry) {
     entry.ranges ||= [];
@@ -290,30 +292,42 @@ async function main(event) {
     const cfg = loadConfig();
     const enabled = cfg.bigFileDigest !== false;
     const threshold = cfg.bigFileThreshold || 1500;
-    const mappable = enabled && !toolInput.offset && !toolInput.limit && !shouldSkipFile(filePath);
-    const lines = mappable ? getFileLines(filePath) : 0;
+    const targeted = isTargetedRead(toolInput);
+    const mappable = enabled && !targeted.hasOffset && !targeted.hasLimit && !shouldSkipFile(filePath);
+    const lines = mappable ? totalLines : 0;
 
     if (shouldNudgeBigFile({
-      entry, hasOffset: !!toolInput.offset, hasLimit: !!toolInput.limit, lines, threshold, enabled,
+      entry,
+      hasOffset: targeted.hasOffset,
+      hasLimit: targeted.hasLimit,
+      lines,
+      threshold,
+      enabled,
     })) {
       const mtime = getMtime(filePath);
       cache.files[filePath] = {
-        mtime, lines, tokens: estimateTokens(lines, ext),
-        readAt: new Date().toISOString(), readAtMs: Date.now(),
-        ranges: [], ppids: [ppid], nudged: true,
+        mtime,
+        lines,
+        tokens: estimateRange(filePath, 0, lines),
+        readAt: new Date().toISOString(),
+        readAtMs: Date.now(),
+        ranges: [],
+        ppids: [ppid],
+        nudged: true,
       };
       cache.bigFileNudges = (cache.bigFileNudges || 0) + 1;
-      saveCache(sessionId, cache);
 
       let digest = '';
-      try { digest = formatDigest(parseFileStructure(filePath), lines); } catch { /* best-effort */ }
+      try { digest = formatDigest(parseFileStructure(filePath), lines); } catch { /* best effort */ }
       const reason =
-        `🗺️ [read-cache] ${basename(filePath)} is ${lines} lines (~${formatTokens(estimateTokens(lines, ext))} tokens). ` +
-        `Here's its map — Read with offset/limit for the section you need, or Read it again to load the whole file.\n${digest}`;
+        `🗺️ [read-cache] ${basename(filePath)} is ${lines} lines. ` +
+        `Use the map to request only the needed range; repeat the full read if it is genuinely required.\n${digest}`;
+      accountBlockOverhead(cache, reason);
+      saveCache(sessionId, cache);
       block(reason);
     }
 
-    allow(sessionId, cache, filePath, getMtime(filePath), offset, end, ext, ppid);
+    allow(sessionId, cache, filePath, getMtime(filePath), offset, end, ppid);
     return;
   }
 
@@ -321,8 +335,7 @@ async function main(event) {
   if (currentMtime === null) return;
 
   if (currentMtime !== entry.mtime) {
-    allow(sessionId, cache, filePath, currentMtime, offset, end, ext, ppid,
-      `[read-cache] ${basename(filePath)} changed on disk — cache refreshed.`);
+    allow(sessionId, cache, filePath, currentMtime, offset, end, ppid);
     return;
   }
 
@@ -338,7 +351,7 @@ async function main(event) {
     entry.ranges.push([offset, end]);
     entry.ppids = trimPpids([...(entry.ppids || []), ppid]);
     entry.lines += limit;
-    entry.tokens += estimateTokens(limit, ext);
+    entry.tokens += estimateRange(filePath, offset, end);
     entry.readAt = new Date().toISOString();
     entry.readAtMs = Date.now();
     saveCache(sessionId, cache);
@@ -347,18 +360,31 @@ async function main(event) {
 
   const staleness = checkStaleness(cache, filePath);
   if (staleness.stale) {
-    allow(sessionId, cache, filePath, currentMtime, offset, end, ext, ppid,
-      `[read-cache] Re-read allowed: ${basename(filePath)} context is stale (${staleness.reason}).`);
+    allow(sessionId, cache, filePath, currentMtime, offset, end, ppid);
     return;
   }
 
-  const wouldReload = Math.min(estimateTokens(limit, ext), entry.tokens || estimateTokens(limit, ext));
-  cache.totalTokensSaved += wouldReload;
-  cache.blockedReads += 1;
-  saveCache(sessionId, cache);
+  // Counterfactual direct-input estimate for the blocked result. The result was
+  // never tokenized by Kimi, so this can only be ESTIMATED. We intentionally do
+  // not multiply by replay amplification.
+  const grossAvoided = estimateRange(filePath, offset, end);
+  const wasPartialRequest = isTargetedRead(toolInput).hasOffset || isTargetedRead(toolInput).hasLimit;
+  const reason = buildBlockMessage(filePath, entry, wasPartialRequest, event.tool_name === 'ReadFile');
+  const blockOverhead = estimateVisibleTextTokens(reason, getCalibrationFactor());
 
-  const wasPartialRequest = !!(toolInput.offset || toolInput.limit);
-  const reason = buildBlockMessage(filePath, entry, wasPartialRequest);
+  cache.totalTokensSaved += grossAvoided; // legacy field, still an estimate
+  cache.grossAvoidedReadTokensEstimated += grossAvoided;
+  cache.blockOverheadTokensEstimated += blockOverhead;
+  cache.blockedReads += 1;
+  cache.lastBlockedRead = {
+    at: new Date().toISOString(),
+    grossAvoidedTokensEstimated: grossAvoided,
+    blockOverheadTokensEstimated: blockOverhead,
+    offset,
+    limit,
+    file: filePath,
+  };
+  saveCache(sessionId, cache);
   block(reason);
 }
 
