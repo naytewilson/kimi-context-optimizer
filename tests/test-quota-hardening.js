@@ -10,14 +10,19 @@
 import { test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync,
+  mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const kimiHome = mkdtempSync(join(tmpdir(), 'kco-quota-kimi-'));
+const kcoHome = mkdtempSync(join(tmpdir(), 'kco-quota-state-'));
 process.env.KIMI_CODE_HOME = kimiHome;
+process.env.KCO_HOME = kcoHome;
 
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 let wireUsage;
 
 before(async () => {
@@ -152,4 +157,124 @@ test('incremental reader tolerates a partial appended JSON line and completes it
   assert.equal(complete.totalInput, 300);
   assert.equal(complete.totalCacheRead, 3000);
   assert.equal(complete.totalOutput, 30);
+});
+
+// ── Quota controller ─────────────────────────────────────────────────────────
+
+test('quota controller computes replay amplification from real input-side usage', async () => {
+  let quota;
+  try { quota = await import('../src/quota-controller.js'); }
+  catch { assert.fail('quota-controller.js must exist'); }
+
+  const amp = quota.computeReplayAmplification({
+    totalInputSide: 100_000,
+    totalInput: 10_000,
+    totalCacheCreation: 10_000,
+  });
+  assert.equal(amp, 5);
+});
+
+test('quota controller recommends early compaction only after context, step, and replay gates', async () => {
+  let quota;
+  try { quota = await import('../src/quota-controller.js'); }
+  catch { assert.fail('quota-controller.js must exist'); }
+
+  assert.equal(quota.shouldRecommendQuotaCompact({
+    contextTokens: 79_999, steps: 20, replayAmplification: 10,
+  }).recommend, false);
+  assert.equal(quota.shouldRecommendQuotaCompact({
+    contextTokens: 120_000, steps: 7, replayAmplification: 10,
+  }).recommend, false);
+  assert.equal(quota.shouldRecommendQuotaCompact({
+    contextTokens: 120_000, steps: 20, replayAmplification: 2.99,
+  }).recommend, false);
+
+  const hit = quota.shouldRecommendQuotaCompact({
+    contextTokens: 120_000, steps: 20, replayAmplification: 5.2,
+  });
+  assert.equal(hit.recommend, true);
+  assert.match(hit.reason, /replay/i);
+});
+
+// ── Read-cache quota mode ────────────────────────────────────────────────────
+
+test('quota-mode read cache does not expire unchanged context on wall clock alone', async () => {
+  const readCache = await import('../src/read-cache.js');
+  assert.equal(typeof readCache.isReadCacheTimeStale, 'function');
+
+  const twentyMinutes = 20 * 60 * 1000;
+  assert.equal(readCache.isReadCacheTimeStale({
+    readAtMs: 1,
+    nowMs: 1 + twentyMinutes,
+    quotaMode: true,
+    readCacheTimeStalenessMs: 0,
+  }), false);
+
+  assert.equal(readCache.isReadCacheTimeStale({
+    readAtMs: 1,
+    nowMs: 1 + twentyMinutes,
+    quotaMode: true,
+    readCacheTimeStalenessMs: 10 * 60 * 1000,
+  }), true);
+});
+
+// ── Observation-hook notice delivery ─────────────────────────────────────────
+
+test('notice queue deduplicates normal notices and flushes them once', async () => {
+  const notices = await import('../src/notices.js');
+  assert.equal(typeof notices.queueNotice, 'function');
+  assert.equal(typeof notices.flushPendingNotices, 'function');
+
+  const sid = 'session_notice-queue';
+  assert.equal(notices.queueNotice(sid, {
+    kind: 'budget:quota', text: 'compact for quota efficiency', priority: 'normal',
+  }), true);
+  assert.equal(notices.queueNotice(sid, {
+    kind: 'budget:quota', text: 'duplicate', priority: 'normal',
+  }), false);
+  assert.equal(notices.flushPendingNotices(sid), 'compact for quota efficiency');
+  assert.equal(notices.flushPendingNotices(sid), '');
+});
+
+test('UserPromptSubmit notice-flush hook injects queued actionable text', async () => {
+  const notices = await import('../src/notices.js');
+  assert.equal(typeof notices.queueNotice, 'function');
+  const sid = 'session_notice-flush';
+  notices.queueNotice(sid, {
+    kind: 'budget:quota-flush', text: '[context-budget] compact soon', priority: 'normal',
+  });
+
+  const result = spawnSync(process.execPath, [join(repoRoot, 'src', 'notice-flush.js')], {
+    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sid, cwd: '/work/proj', prompt: 'continue' }),
+    env: { ...process.env, KCO_HOME: kcoHome, KIMI_CODE_HOME: kimiHome },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /compact soon/);
+
+  const manifest = JSON.parse(readFileSync(join(repoRoot, 'kimi.plugin.json'), 'utf8'));
+  assert.ok(manifest.hooks.some((h) => h.event === 'UserPromptSubmit' && /notice-flush\.js/.test(h.command)));
+});
+
+// ── Doctor live-contract classifier ──────────────────────────────────────────
+
+test('doctor distinguishes supported usage transcripts from schema drift', async () => {
+  const doctor = await import('../src/doctor.js');
+  assert.equal(typeof doctor.classifyWireContracts, 'function');
+
+  const supported = join(kimiHome, 'doctor-supported.jsonl');
+  writeFileSync(supported, JSON.stringify(usageRecord({
+    inputOther: 100, cacheRead: 200, output: 10, time: Date.now(),
+  })) + '\n');
+  const unsupported = join(kimiHome, 'doctor-unsupported.jsonl');
+  writeFileSync(unsupported, JSON.stringify({ type: 'future.usage.shape', counters: { input: 42 } }) + '\n');
+
+  const ok = doctor.classifyWireContracts([supported]);
+  assert.equal(ok.status, 'supported');
+  assert.equal(ok.recognizedUsageRows, 1);
+  assert.deepEqual(ok.wireSchemas, ['usage.record']);
+
+  const drift = doctor.classifyWireContracts([unsupported]);
+  assert.equal(drift.status, 'unsupported');
+  assert.equal(drift.recognizedUsageRows, 0);
 });
