@@ -6,6 +6,11 @@
  * The ledger counts MODEL-VISIBLE advisory text, not intentions to speak.
  * Observation hooks may queue text for a later UserPromptSubmit phase, but a
  * queued notice costs zero context tokens until it is actually flushed.
+ *
+ * KCO_NOTICE_MODE is intentionally process-local:
+ *   immediate (default) — print + charge delivered overhead
+ *   queue               — queue for next model-visible prompt phase, charge later
+ *   silent              — suppress entirely, charge nothing
  */
 
 import { join } from 'path';
@@ -21,7 +26,6 @@ export function emptyLedger() {
   return { count: 0, tokensInjected: 0, kinds: {} };
 }
 
-/** Decide whether a notice may be delivered, given the delivered ledger. */
 export function shouldEmit(ledger, { kind, priority = 'normal', cap = DEFAULT_NOTICE_CAP } = {}) {
   if (priority === 'critical') return true;
   if (!kind) return false;
@@ -30,7 +34,6 @@ export function shouldEmit(ledger, { kind, priority = 'normal', cap = DEFAULT_NO
   return true;
 }
 
-/** Record MODEL-VISIBLE advisory text. */
 export function recordEmit(ledger, { kind, text = '' }) {
   return {
     count: ledger.count + 1,
@@ -65,13 +68,6 @@ function loadPending(sessionId) {
   return pending && Array.isArray(pending.items) ? pending.items : [];
 }
 
-/**
- * Queue an actionable advisory for delivery by UserPromptSubmit.
- *
- * Queueing itself is NOT charged as token overhead because the model has not
- * seen the text. Normal notices are deduped against both delivered and pending
- * kinds, and pending normal notices reserve a slot in the session noise cap.
- */
 export function queueNotice(
   sessionId,
   { kind, text, priority = 'normal', cap = DEFAULT_NOTICE_CAP } = {},
@@ -98,11 +94,6 @@ export function queueNotice(
   }
 }
 
-/**
- * Return queued MODEL-VISIBLE text exactly once and charge its estimated token
- * overhead at delivery time. Items that are no longer eligible under the
- * normal notice cap are dropped rather than charged.
- */
 export function flushPendingNotices(sessionId) {
   if (!sessionId) return '';
   ensureDataDirs();
@@ -111,7 +102,6 @@ export function flushPendingNotices(sessionId) {
     const items = loadPending(sessionId);
     if (!items.length) return '';
 
-    // Clear first so a crash cannot redeliver stale instructions.
     saveJSON(pendingFile(sessionId), { items: [] });
 
     let ledger = loadLedger(sessionId);
@@ -129,13 +119,19 @@ export function flushPendingNotices(sessionId) {
   }
 }
 
-/** Immediate model-visible advisory for phases where stdout is consumed. */
 export function emitNotice(
   sessionId,
   { kind, text, priority = 'normal', cap = DEFAULT_NOTICE_CAP },
   printFn = console.log,
 ) {
   if (!sessionId || !text) return false;
+
+  const mode = process.env.KCO_NOTICE_MODE || 'immediate';
+  if (mode === 'silent') return false;
+  if (mode === 'queue') {
+    return queueNotice(sessionId, { kind, text, priority, cap });
+  }
+
   const release = acquireFileLock(lockName(sessionId));
   try {
     const ledger = loadLedger(sessionId);
