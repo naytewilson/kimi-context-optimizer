@@ -24,6 +24,11 @@
     },
     {
       "event": "UserPromptSubmit",
+      "command": "node ./src/notice-flush.js",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
       "command": "node ./src/prompt-coach.js",
       "timeout": 10
     },
