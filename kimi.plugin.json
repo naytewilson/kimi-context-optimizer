@@ -12,14 +12,19 @@
   "hooks": [
     {
       "event": "PreToolUse",
-      "matcher": "Read",
+      "matcher": "Read|ReadFile",
       "command": "node ./src/read-cache.js",
       "timeout": 10
     },
     {
       "event": "PreToolUse",
-      "matcher": "Read",
+      "matcher": "Read|ReadFile",
       "command": "node ./src/context-shield.js",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "node ./src/notice-flush.js",
       "timeout": 10
     },
     {
@@ -29,35 +34,35 @@
     },
     {
       "event": "PostToolUse",
-      "matcher": "Edit|Write",
+      "matcher": "Edit|StrReplaceFile|Write|WriteFile",
       "command": "node ./src/read-cache.js",
       "timeout": 10
     },
     {
       "event": "PostToolUse",
-      "matcher": "Bash|Read|Edit|Write|Glob|Grep|Agent|mcp__.*",
-      "command": "node ./src/tracker.js",
+      "matcher": "Bash|Shell|Read|ReadFile|Edit|StrReplaceFile|Write|WriteFile|Glob|Grep|Agent|mcp__.*",
+      "command": "node ./src/tracker-hook.js",
       "timeout": 15
     },
     {
       "event": "PostToolUse",
-      "matcher": "Bash|Read|Edit|Write|Glob|Grep|Agent|mcp__.*",
-      "command": "node ./src/budget.js",
+      "matcher": "Bash|Shell|Read|ReadFile|Edit|StrReplaceFile|Write|WriteFile|Glob|Grep|Agent|mcp__.*",
+      "command": "node ./src/budget-hook.js",
       "timeout": 15
     },
     {
       "event": "PostToolUseFailure",
-      "command": "node ./src/tracker.js",
+      "command": "node ./src/tracker-hook.js",
       "timeout": 10
     },
     {
       "event": "SubagentStart",
-      "command": "node ./src/tracker.js",
+      "command": "node ./src/tracker-hook.js",
       "timeout": 10
     },
     {
       "event": "SubagentStop",
-      "command": "node ./src/tracker.js",
+      "command": "node ./src/tracker-hook.js",
       "timeout": 10
     },
     {
@@ -67,7 +72,7 @@
     },
     {
       "event": "PreCompact",
-      "command": "node ./src/tracker.js",
+      "command": "node ./src/tracker-hook.js",
       "timeout": 10
     },
     {
@@ -77,12 +82,12 @@
     },
     {
       "event": "SessionStart",
-      "command": "node ./src/tracker.js",
+      "command": "node ./src/tracker-hook.js",
       "timeout": 15
     },
     {
       "event": "SessionEnd",
-      "command": "node ./src/tracker.js",
+      "command": "node ./src/tracker-hook.js",
       "timeout": 30
     },
     {

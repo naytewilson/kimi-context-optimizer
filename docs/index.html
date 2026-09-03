@@ -1,531 +1,266 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kimi Context Optimizer — 63% fewer tokens for Kimi Code</title>
-<meta name="description" content="KCO hooks into Kimi Code CLI to block redundant reads, guard your real context budget from wire.jsonl, and coach your prompts. 63% token savings, benchmarked. Zero deps, local only, MIT.">
-<meta property="og:title" content="Kimi Context Optimizer — stop burning context">
-<meta property="og:description" content="Read Cache + Budget Guard + Prompt Coach for Kimi Code. Real per-step context size from wire.jsonl. 63% savings, zero dependencies, no telemetry.">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://egorfedorov.github.io/kimi-context-optimizer/">
-<meta property="og:image" content="https://egorfedorov.github.io/kimi-context-optimizer/assets/terminal-demo.svg">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='none' stroke='%2316202c' stroke-width='10'/><path d='M50 10 A40 40 0 1 1 20.8 77.4' fill='none' stroke='%2322d3ee' stroke-width='10' stroke-linecap='round'/><path d='M55 30 L44 54 L52 54 L47 72 L60 48 L52 48 Z' fill='%2334d399'/></svg>">
-<style>
-:root{
-  --bg:#0a0e14; --bg2:#0f1620; --card:#101825; --code:#0c1420;
-  --border:#1c2733; --text:#dbe4ee; --dim:#8b98a8; --faint:#5b6774;
-  --teal:#22d3ee; --teal-glow:rgba(34,211,238,.14);
-  --violet:#a78bfa; --violet-glow:rgba(139,92,246,.14);
-  --green:#34d399; --red:#f87171; --amber:#fbbf24;
-}
-*{margin:0;padding:0;box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;
-  background:var(--bg);color:var(--text);line-height:1.7;overflow-x:hidden;
-}
-body::before{
-  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-}
-.container{max-width:1100px;margin:0 auto;padding:0 24px;position:relative;z-index:1}
-.mono{font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace}
-::selection{background:rgba(34,211,238,.25)}
-
-/* reveal */
-.reveal{opacity:0;transform:translateY(24px);transition:opacity .6s ease,transform .6s ease}
-.reveal.visible{opacity:1;transform:none}
-
-/* nav */
-nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:14px 0;
-  background:rgba(10,14,20,.82);backdrop-filter:blur(18px);border-bottom:1px solid var(--border)}
-nav .container{display:flex;justify-content:space-between;align-items:center}
-.nav-logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);font-weight:700;font-size:1.05rem}
-.nav-logo svg{flex:none}
-.nav-logo em{font-style:normal;color:var(--teal)}
-.nav-links{display:flex;gap:28px;list-style:none;align-items:center}
-.nav-links a{color:var(--dim);text-decoration:none;font-size:.88rem;transition:color .2s}
-.nav-links a:hover{color:var(--text)}
-.nav-cta{background:var(--teal);color:#04222a!important;padding:8px 18px;border-radius:8px;font-weight:700}
-.nav-cta:hover{opacity:.85}
-@media(max-width:820px){.nav-links li:not(:last-child){display:none}}
-
-/* hero */
-.hero{padding:150px 0 90px;text-align:center;position:relative}
-.hero::before{content:'';position:absolute;top:40px;left:50%;transform:translateX(-50%);
-  width:700px;height:700px;pointer-events:none;
-  background:radial-gradient(circle,var(--teal-glow) 0%,transparent 65%)}
-.badge{display:inline-flex;align-items:center;gap:8px;background:var(--card);
-  border:1px solid var(--border);padding:6px 16px;border-radius:100px;
-  font-size:.83rem;color:var(--dim);margin-bottom:30px}
-.badge-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.hero-stat{font-size:clamp(4rem,11vw,7.5rem);font-weight:900;line-height:1;letter-spacing:-.04em;
-  background:linear-gradient(120deg,var(--green),var(--teal));
-  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:10px}
-h1{font-size:clamp(2.2rem,5.5vw,3.8rem);font-weight:800;line-height:1.12;letter-spacing:-.03em;margin-bottom:22px}
-h1 .hl{background:linear-gradient(120deg,var(--teal),var(--violet));
-  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.hero-sub{font-size:1.2rem;color:var(--dim);max-width:640px;margin:0 auto 20px}
-.hero-meta{font-size:.85rem;color:var(--faint);margin-bottom:44px}
-.hero-meta b{color:var(--dim);font-weight:600}
-
-/* install chip */
-.chip{margin:0 auto 56px;max-width:640px;background:var(--code);border:1px solid var(--border);
-  border-radius:12px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px}
-.chip code{font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:.86rem;color:var(--teal);
-  white-space:nowrap;overflow-x:auto;scrollbar-width:none}
-.chip code::-webkit-scrollbar{display:none}
-.chip-copy{flex:none;background:var(--card);border:1px solid var(--border);color:var(--dim);
-  border-radius:8px;padding:7px 14px;font-size:.8rem;cursor:pointer;transition:all .2s}
-.chip-copy:hover{border-color:var(--teal);color:var(--teal)}
-.chip-copy.ok{border-color:var(--green);color:var(--green)}
-
-/* terminal */
-.term{max-width:760px;margin:0 auto;background:var(--code);border:1px solid var(--border);
-  border-radius:14px;overflow:hidden;text-align:left;
-  box-shadow:0 24px 80px rgba(0,0,0,.5),0 0 0 1px rgba(34,211,238,.06)}
-.term-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;background:#131b26;border-bottom:1px solid var(--border)}
-.term-bar i{width:11px;height:11px;border-radius:50%;display:block}
-.term-bar i:nth-child(1){background:var(--red)}
-.term-bar i:nth-child(2){background:var(--amber)}
-.term-bar i:nth-child(3){background:var(--green)}
-.term-bar span{margin-left:auto;margin-right:auto;font-size:.78rem;color:var(--faint);
-  font-family:'SF Mono',ui-monospace,Menlo,monospace;transform:translateX(-22px)}
-.term-body{padding:20px 22px;min-height:340px;font-family:'SF Mono',ui-monospace,Menlo,monospace;
-  font-size:.82rem;line-height:1.85;white-space:pre-wrap;word-break:break-word}
-.term-body .ln{display:block;min-height:1.5em}
-.t-dim{color:var(--dim)} .t-faint{color:var(--faint)} .t-prompt{color:var(--text)}
-.t-red{color:var(--red)} .t-teal{color:var(--teal)} .t-violet{color:var(--violet)}
-.t-green{color:var(--green);font-weight:700}
-.caret{display:inline-block;width:8px;height:1.05em;background:var(--teal);
-  vertical-align:text-bottom;animation:blink 1s steps(1) infinite}
-@keyframes blink{50%{opacity:0}}
-
-/* sections */
-section{padding:96px 0}
-.sec-tag{color:var(--teal);font-family:'SF Mono',ui-monospace,Menlo,monospace;
-  font-size:.8rem;letter-spacing:.18em;text-transform:uppercase;margin-bottom:14px}
-h2{font-size:clamp(1.7rem,3.6vw,2.5rem);font-weight:800;letter-spacing:-.02em;line-height:1.2;margin-bottom:16px}
-.sec-sub{color:var(--dim);max-width:640px;margin-bottom:48px}
-.center{text-align:center}.center .sec-sub{margin-left:auto;margin-right:auto}
-
-/* problem */
-.problem-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
-.prob-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:26px 24px;transition:border-color .25s,transform .25s}
-.prob-card:hover{border-color:#2a3b4d;transform:translateY(-3px)}
-.prob-num{font-size:2rem;font-weight:800;letter-spacing:-.02em;margin-bottom:8px;
-  background:linear-gradient(120deg,var(--red),var(--amber));
-  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.prob-card p{color:var(--dim);font-size:.93rem}
-
-/* how it works */
-.how-img{display:block;width:100%;max-width:760px;margin:0 auto;border-radius:14px;border:1px solid var(--border)}
-
-/* features */
-.feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
-.feat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:26px 24px;transition:border-color .25s,transform .25s}
-.feat:hover{border-color:var(--teal);transform:translateY(-3px)}
-.feat h3{font-size:1.02rem;margin:12px 0 8px;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-weight:700}
-.feat p{color:var(--dim);font-size:.9rem}
-.feat-ico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem}
-.feat-ico.teal{background:var(--teal-glow)} .feat-ico.violet{background:var(--violet-glow)}
-.feat-ico.green{background:rgba(52,211,153,.12)} .feat-ico.amber{background:rgba(251,191,36,.12)}
-.feat-ico.red{background:rgba(248,113,113,.12)}
-
-/* dashboard showcase */
-.dash-img{display:block;width:100%;max-width:760px;margin:56px auto 0;border-radius:14px;border:1px solid var(--border)}
-
-/* comparison */
-.cmp{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);
-  border:1px solid var(--border);border-radius:14px;overflow:hidden;font-size:.9rem}
-.cmp th,.cmp td{padding:14px 18px;text-align:left;vertical-align:top;border-bottom:1px solid var(--border)}
-.cmp th{font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase}
-.cmp thead th{background:#0d1420;color:var(--dim)}
-.cmp thead th:last-child{color:var(--teal)}
-.cmp tbody tr:last-child td{border-bottom:none}
-.cmp td:first-child{color:var(--dim);font-weight:600;white-space:nowrap}
-.cmp td.old{color:var(--faint)}
-.cmp td.new{color:var(--text)}
-.cmp td.new b{color:var(--green);font-weight:600}
-@media(max-width:640px){.cmp th,.cmp td{padding:10px 12px;font-size:.82rem}.cmp td:first-child{white-space:normal}}
-
-/* commands */
-.cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 28px;background:var(--card);
-  border:1px solid var(--border);border-radius:14px;padding:8px 24px}
-.cmd{display:flex;gap:14px;padding:11px 0;border-bottom:1px solid var(--border);font-size:.86rem;align-items:baseline}
-.cmd:nth-last-child(-n+2){border-bottom:none}
-.cmd code{flex:none;min-width:150px;color:var(--teal);font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:.8rem}
-.cmd span{color:var(--dim)}
-@media(max-width:760px){
-  .cmd-grid{grid-template-columns:1fr}
-  .cmd:nth-last-child(2){border-bottom:1px solid var(--border)}
-  .cmd{flex-direction:column;gap:2px}
-}
-
-/* install */
-.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;margin-bottom:44px}
-.step{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:26px 24px}
-.step-n{width:34px;height:34px;border-radius:50%;background:var(--teal-glow);color:var(--teal);
-  display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:14px;
-  font-family:'SF Mono',ui-monospace,Menlo,monospace}
-.step h3{font-size:1rem;margin-bottom:8px}
-.step p{color:var(--dim);font-size:.88rem;margin-bottom:12px}
-.step code{display:block;background:var(--code);border:1px solid var(--border);border-radius:8px;
-  padding:10px 12px;font-size:.8rem;color:var(--teal);font-family:'SF Mono',ui-monospace,Menlo,monospace;
-  white-space:pre-wrap;word-break:break-all}
-.cfg{background:var(--code);border:1px solid var(--border);border-radius:14px;padding:22px 24px;
-  font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:.82rem;line-height:1.8;overflow-x:auto}
-.cfg .k{color:var(--teal)} .cfg .s{color:var(--green)} .cfg .c{color:var(--faint)} .cfg .n{color:var(--violet)}
-
-/* privacy strip */
-.privacy{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px}
-.priv{border:1px solid var(--border);border-radius:14px;padding:22px;background:var(--card);text-align:center}
-.priv b{display:block;margin-bottom:6px;color:var(--teal)}
-.priv span{color:var(--dim);font-size:.86rem}
-
-footer{border-top:1px solid var(--border);padding:40px 0 56px;color:var(--faint);font-size:.85rem}
-footer a{color:var(--dim)}
-footer .foot-row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
-
-@media(max-width:480px){
-  section{padding:64px 0}
-  .hero{padding:120px 0 64px}
-  .term-body{min-height:300px;font-size:.72rem;padding:16px 14px}
-  .chip{flex-direction:column;align-items:stretch}
-  .chip-copy{align-self:flex-end}
-}
-@media(prefers-reduced-motion:reduce){
-  html{scroll-behavior:auto}
-  .reveal{opacity:1;transform:none;transition:none}
-  .badge-dot,.caret{animation:none}
-}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kimi Context Optimizer — evidence-honest context reduction for Kimi Code</title>
+  <meta name="description" content="KCO blocks redundant reads, observes current Kimi wire usage, and reports conservative estimated direct-input reduction after its own model-visible overhead.">
+  <meta property="og:title" content="Kimi Context Optimizer">
+  <meta property="og:description" content="Current Kimi tool compatibility, observed wire telemetry, conservative counterfactual read accounting, zero runtime dependencies.">
+  <meta property="og:type" content="website">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080c12;
+      --panel: #0d141e;
+      --panel2: #111b27;
+      --line: #213044;
+      --text: #e6eef7;
+      --muted: #92a2b5;
+      --cyan: #43d9f5;
+      --green: #4adea2;
+      --purple: #b59cff;
+      --amber: #ffd166;
+      --shadow: rgba(0,0,0,.35);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(900px 560px at 50% -160px, rgba(67,217,245,.13), transparent 68%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+    }
+    a { color: inherit; }
+    code, pre, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    .wrap { width: min(1080px, calc(100% - 40px)); margin: 0 auto; }
+    nav {
+      position: sticky; top: 0; z-index: 20;
+      backdrop-filter: blur(16px);
+      background: rgba(8,12,18,.82);
+      border-bottom: 1px solid rgba(33,48,68,.75);
+    }
+    nav .wrap { height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { text-decoration: none; font-weight: 800; letter-spacing: -.02em; }
+    .brand span { color: var(--cyan); }
+    .navlinks { display: flex; gap: 22px; align-items: center; color: var(--muted); font-size: 14px; }
+    .navlinks a { text-decoration: none; }
+    .navlinks a:hover { color: var(--text); }
+    .button {
+      display: inline-flex; align-items: center; justify-content: center;
+      text-decoration: none; border-radius: 10px; padding: 10px 16px;
+      background: var(--cyan); color: #031217; font-weight: 800;
+    }
+    header { padding: 108px 0 76px; text-align: center; }
+    .eyebrow {
+      display: inline-flex; gap: 8px; align-items: center;
+      border: 1px solid var(--line); background: rgba(17,27,39,.76);
+      color: var(--muted); border-radius: 999px; padding: 7px 13px; font-size: 13px;
+    }
+    .dot { width: 8px; height: 8px; background: var(--green); border-radius: 50%; }
+    h1 {
+      max-width: 900px; margin: 28px auto 18px;
+      font-size: clamp(42px, 7vw, 78px); line-height: .99; letter-spacing: -.055em;
+    }
+    .gradient {
+      background: linear-gradient(110deg, var(--cyan), var(--green), var(--purple));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .lead { max-width: 760px; margin: 0 auto; color: var(--muted); font-size: clamp(17px, 2.3vw, 21px); }
+    .hero-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 30px; }
+    .ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    .terminal {
+      margin: 48px auto 0; max-width: 820px; text-align: left;
+      background: #071019; border: 1px solid var(--line); border-radius: 16px;
+      box-shadow: 0 28px 80px var(--shadow); overflow: hidden;
+    }
+    .terminal-head { padding: 11px 16px; color: var(--muted); border-bottom: 1px solid var(--line); font-size: 12px; }
+    .terminal pre { margin: 0; padding: 22px; overflow-x: auto; font-size: 13px; line-height: 1.75; white-space: pre-wrap; }
+    .cyan { color: var(--cyan); } .green { color: var(--green); } .purple { color: var(--purple); } .amber { color: var(--amber); }
+    section { padding: 80px 0; border-top: 1px solid rgba(33,48,68,.55); }
+    .section-head { max-width: 720px; margin-bottom: 34px; }
+    .kicker { color: var(--cyan); font: 700 12px/1.2 "SFMono-Regular", Consolas, monospace; letter-spacing: .15em; text-transform: uppercase; }
+    h2 { margin: 10px 0 12px; font-size: clamp(30px, 4vw, 46px); line-height: 1.08; letter-spacing: -.035em; }
+    .sub { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card { background: linear-gradient(180deg, rgba(17,27,39,.95), rgba(13,20,30,.95)); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+    .card h3 { margin: 8px 0 8px; font-size: 17px; }
+    .card p { margin: 0; color: var(--muted); font-size: 14px; }
+    .tag { color: var(--cyan); font: 700 12px/1.2 "SFMono-Regular", Consolas, monospace; }
+    .equation {
+      background: #071019; border: 1px solid var(--line); border-radius: 14px;
+      padding: 22px; overflow-x: auto; color: #d6e6f5; font-size: 14px;
+    }
+    .callout { margin-top: 18px; padding: 18px 20px; border-left: 3px solid var(--amber); background: rgba(255,209,102,.065); color: #d9d1b7; }
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .list { margin: 0; padding-left: 20px; color: var(--muted); }
+    .list li + li { margin-top: 9px; }
+    .install {
+      background: #071019; border: 1px solid var(--line); border-radius: 14px;
+      padding: 18px 20px; overflow-x: auto; color: var(--cyan); font-size: 14px;
+    }
+    .compat { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 14px; border: 1px solid var(--line); }
+    .compat th, .compat td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .compat th { color: var(--muted); background: #0a111a; }
+    .compat tr:last-child td { border-bottom: 0; }
+    footer { padding: 38px 0 54px; color: var(--muted); border-top: 1px solid var(--line); font-size: 14px; }
+    footer .wrap { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+    @media (max-width: 820px) {
+      .navlinks a:not(.button) { display: none; }
+      .grid { grid-template-columns: 1fr; }
+      .two { grid-template-columns: 1fr; }
+      header { padding-top: 80px; }
+    }
+  </style>
 </head>
 <body>
-
 <nav>
-  <div class="container">
-    <a class="nav-logo" href="#top">
-      <svg width="26" height="26" viewBox="0 0 100 100" aria-hidden="true">
-        <circle cx="50" cy="50" r="40" fill="none" stroke="#16202c" stroke-width="10"/>
-        <path d="M50 10 A40 40 0 1 1 20.8 77.4" fill="none" stroke="#22d3ee" stroke-width="10" stroke-linecap="round"/>
-        <path d="M55 30 L44 54 L52 54 L47 72 L60 48 L52 48 Z" fill="#34d399"/>
-      </svg>
-      <span><em>kimi</em>-context-optimizer</span>
-    </a>
-    <ul class="nav-links">
-      <li><a href="#problem">Problem</a></li>
-      <li><a href="#how">How it works</a></li>
-      <li><a href="#features">Features</a></li>
-      <li><a href="#why">Why KCO</a></li>
-      <li><a href="#commands">Commands</a></li>
-      <li><a class="nav-cta" href="#install">Install</a></li>
-    </ul>
+  <div class="wrap">
+    <a class="brand" href="#top"><span>kimi</span>-context-optimizer</a>
+    <div class="navlinks">
+      <a href="#evidence">Evidence</a>
+      <a href="#features">Features</a>
+      <a href="#benchmark">Benchmark</a>
+      <a class="button" href="#install">Install</a>
+    </div>
   </div>
 </nav>
 
-<header class="hero" id="top">
-  <div class="container">
-    <div class="badge"><span class="badge-dot"></span> Ported from claude-context-optimizer · MIT · local only</div>
-    <div class="hero-stat">63%</div>
-    <h1>Stop burning context.<br><span class="hl">Keep your tokens for the work.</span></h1>
-    <p class="hero-sub">KCO hooks into Kimi Code CLI to block redundant reads, guard your
-      <b>real</b> context budget straight from the wire transcript, and coach weak prompts —
-      before they cost you.</p>
-    <p class="hero-meta"><b>26 modules</b> · <b>0 runtime deps</b> · <b>77 tests</b> · benchmarked across <b>7 scenarios</b></p>
-
-    <div class="chip">
-      <code id="install-cmd">/plugins install https://github.com/egorfedorov/kimi-context-optimizer</code>
-      <button class="chip-copy" id="copy-btn" type="button">Copy</button>
+<header id="top">
+  <div class="wrap">
+    <div class="eyebrow"><span class="dot"></span> Current Kimi tool compatibility · local state · zero runtime deps</div>
+    <h1>Spend context on the work, <span class="gradient">not on repeated input.</span></h1>
+    <p class="lead">KCO blocks redundant file reads, observes supported Kimi wire usage, and reports a conservative <strong>estimated net direct-input reduction</strong> after subtracting its own model-visible overhead.</p>
+    <div class="hero-actions">
+      <a class="button" href="#install">Install the fork</a>
+      <a class="button ghost" href="https://github.com/naytewilson/kimi-context-optimizer">View source</a>
     </div>
 
-    <div class="term">
-      <div class="term-bar"><i></i><i></i><i></i><span>kimi — with kimi-context-optimizer</span></div>
-      <div class="term-body" id="term-body" aria-live="polite"><noscript>
-<span class="ln t-dim">$ kimi</span>
-<span class="ln t-prompt">❯ fix the flaky test in src/tracker.js</span>
-<span class="ln t-dim">→ Read src/tracker.js — 412 lines, ~3,900 tokens</span>
-<span class="ln t-dim">→ Read src/tracker.js</span>
-<span class="ln t-red">⛔ [read-cache] Already loaded tracker.js this session (412 lines, ~3,900 tokens). File unchanged.</span>
-<span class="ln t-teal">📋 File map (412 lines):</span>
-<span class="ln t-faint">     1: import { saveCache } from './cache.js'</span>
-<span class="ln t-faint">    42: export function recordCall(call)</span>
-<span class="ln t-faint">   118: function estimateTokens(lines, ext)</span>
-<span class="ln t-faint">   204: export function buildReport(session)</span>
-<span class="ln t-faint">   … 8 more landmarks</span>
-<span class="ln t-violet">[budget] context 41% of 1M window · cache hit 87%</span>
-<span class="ln t-green">★ KCO saved 60,055 tokens — 63% of what the context would have held</span>
-</noscript></div>
+    <div class="terminal" aria-label="Example KCO accounting output">
+      <div class="terminal-head mono">/kco · evidence-labeled output</div>
+      <pre><span class="cyan">Context</span>  118.0K / 200.0K
+<span class="cyan">Input</span>    524.0K cumulative input-side tokens processed
+<span class="green">Savings</span>  EST +~9.0K net direct-input tokens
+         gross ~10.0K − block feedback ~700 − delivered notices ~300
+<span class="purple">Cache</span>    78% hit · 408.0K cache-read input tokens
+         cache-read input is usage telemetry; it is not KCO savings
+<span class="amber">Replay</span>   3.2x diagnostic signal; not multiplied into the savings claim</pre>
     </div>
   </div>
 </header>
 
-<section id="problem">
-  <div class="container reveal">
-    <p class="sec-tag">The problem</p>
-    <h2>Your context window is leaking.</h2>
-    <p class="sec-sub">In a typical agentic session, 30–40% of context is waste. Every turn
-      resends the whole conversation — so unread, duplicated, and useless bytes are taxed on
-      every single step.</p>
-    <div class="problem-grid">
-      <div class="prob-card"><div class="prob-num">30–40%</div>
-        <p>of a typical session's context is waste: files read twice, lockfiles opened in full, dead-end exploration.</p></div>
-      <div class="prob-card"><div class="prob-num">2,000 lines</div>
-        <p>slurped to change one function. The model needed 50 — you paid for all of them, on every subsequent turn.</p></div>
-      <div class="prob-card"><div class="prob-num">Every turn</div>
-        <p>the entire context goes back over the wire. Waste doesn't cost once — it compounds until you compact.</p></div>
-      <div class="prob-card"><div class="prob-num">2× the price</div>
-        <p>once in tokens, once in quality: useful context gets crowded out and the model loses the plot.</p></div>
+<section id="evidence">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">Evidence model</div>
+      <h2>Observed facts stay separate from counterfactual estimates.</h2>
+      <p class="sub">The optimizer can observe what Kimi actually processed. It cannot observe provider tokenization for a file result that it prevented from being sent, so blocked-read savings remain explicitly estimated.</p>
     </div>
-  </div>
-</section>
+    <div class="grid">
+      <div class="card"><div class="tag">OBSERVED</div><h3>Wire usage</h3><p>Current context, cumulative input/output, cache-read input, cache creation, model identity, and recognized usage schema.</p></div>
+      <div class="card"><div class="tag">ESTIMATED</div><h3>Blocked result</h3><p>The exact requested text range is read from disk and converted with locally calibrated token estimation.</p></div>
+      <div class="card"><div class="tag">ESTIMATED</div><h3>KCO overhead</h3><p>Read-cache feedback plus notices are subtracted only when that text is actually model-visible.</p></div>
+    </div>
 
-<section id="how">
-  <div class="container reveal center">
-    <p class="sec-tag">How it works</p>
-    <h2>Three steps, zero config.</h2>
-    <p class="sec-sub">KCO registers hooks in the Kimi Code lifecycle. They fire before the
-      cost is incurred — not after.</p>
-    <img class="how-img" src="assets/how-it-works.svg" alt="How KCO works: hooks intercept tool calls, cache and track against wire.jsonl ground truth, and save 63% of tokens" loading="lazy">
+    <pre class="equation">estimated net direct-input reduction
+  = estimated blocked-read result tokens
+  - estimated model-visible block-feedback tokens
+  - estimated delivered KCO notice tokens</pre>
+    <div class="callout"><strong>No denominator theater:</strong> cache-read input is usage telemetry, not token savings. Replay amplification is diagnostic only. The result is <strong>not a direct measurement of Kimi subscription quota or credits</strong>, because raw tokens do not provide a public authoritative one-to-one conversion to subscription allowance.</div>
   </div>
 </section>
 
 <section id="features">
-  <div class="container reveal">
-    <p class="sec-tag">Features</p>
-    <h2>Fifteen hook rules, quietly working.</h2>
-    <p class="sec-sub">Automatic from the moment you install. Each one exists to stop a
-      specific way sessions waste context.</p>
-    <div class="feat-grid">
-      <div class="feat">
-        <div class="feat-ico teal">⛔</div>
-        <h3>read-cache</h3>
-        <p>A second full read of the same file gets blocked and replaced with a compact
-          structural file map — landmarks and line numbers, not 3,900 tokens again.</p>
-      </div>
-      <div class="feat">
-        <div class="feat-ico violet">📊</div>
-        <h3>tracker</h3>
-        <p>Every tool call, file touch, and token figure is recorded per session, so reports,
-          digests, and per-task costs are real — not vibes.</p>
-      </div>
-      <div class="feat">
-        <div class="feat-ico green">📈</div>
-        <h3>budget monitor</h3>
-        <p>Live <b>real</b> context % read from wire.jsonl ground truth. Warns at 50/70/85/95%,
-          nudges <code>/compact</code> at 90%, warns about context rot near ~350K on 1M windows.</p>
-      </div>
-      <div class="feat">
-        <div class="feat-ico amber">🎓</div>
-        <h3>prompt-coach</h3>
-        <p>Grades every prompt S–F (English + Russian) before it runs and suggests the fix —
-          so tasks land on the first try instead of the fourth.</p>
-      </div>
-      <div class="feat">
-        <div class="feat-ico teal">🛡️</div>
-        <h3>context-shield</h3>
-        <p>Warns before you read files that were waste in 3+ past sessions, and turns chronic
-          waste into permanent <code>.contextignore</code> rules.</p>
-      </div>
-      <div class="feat">
-        <div class="feat-ico red">💥</div>
-        <h3>failure &amp; delegation tracking</h3>
-        <p>PostToolUseFailure events counted as wasted turns; SubagentStart/Stop attributing
-          what delegated work actually costs.</p>
-      </div>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">Runtime</div>
+      <h2>Optimize the hot path without narrating every breath.</h2>
+      <p class="sub">High-frequency observation hooks stay silent. Actionable notices can be queued for a later model-visible phase, and their token overhead is charged only when delivered.</p>
     </div>
-    <img class="dash-img" src="assets/dashboard-demo.svg" alt="The /kco control center: real context percentage, cache hit rate, blocked reads and tokens saved" loading="lazy">
+    <div class="grid">
+      <div class="card"><div class="tag">READ CACHE</div><h3>Block unchanged repeats</h3><p>Repeated covered ranges are replaced by compact structural guidance. Edits invalidate cache state. Quota mode avoids wall-clock-only expiry.</p></div>
+      <div class="card"><div class="tag">WIRE AUTHORITY</div><h3>Resolve the right session</h3><p>Session-index authority prevents a newer unrelated transcript from contaminating the current session's usage accounting.</p></div>
+      <div class="card"><div class="tag">SCHEMA DOCTOR</div><h3>Detect drift</h3><p>A reachable wire file is not enough. Doctor requires recognized usage rows before calling the transcript supported.</p></div>
+      <div class="card"><div class="tag">QUOTA SIGNAL</div><h3>Compact on replay pressure</h3><p>Context size, step count, and replay amplification can trigger an early compact recommendation without pretending the signal equals credits saved.</p></div>
+      <div class="card"><div class="tag">PROMPT COACH</div><h3>Charge what you inject</h3><p>Model-visible coaching is included in the delivered-notice overhead ledger instead of being treated as free advice from the heavens.</p></div>
+      <div class="card"><div class="tag">CONTEXT SHIELD</div><h3>Learn historical waste</h3><p>Repeated unused-read patterns can suggest context-ignore rules, labeled as estimated historical read volume rather than guaranteed future savings.</p></div>
+    </div>
   </div>
 </section>
 
-<section id="why">
-  <div class="container reveal">
-    <p class="sec-tag">Why the Kimi version is better</p>
-    <h2>Same idea. Honester numbers.</h2>
-    <p class="sec-sub">KCO is a port of claude-context-optimizer — but the Kimi Code surface
-      exposes ground truth the Claude version could only estimate.</p>
-    <table class="cmp">
-      <thead><tr><th></th><th>Claude version</th><th>KCO (Kimi Code)</th></tr></thead>
+<section id="compatibility">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">Current Kimi compatibility</div>
+      <h2>One normalization boundary, two generations of payloads.</h2>
+      <p class="sub">The production hooks accept current Kimi built-ins and legacy aliases so the accounting meter cannot quietly miss the real tool calls.</p>
+    </div>
+    <table class="compat">
+      <thead><tr><th>Current Kimi tool</th><th>Canonical KCO semantics</th><th>Supported shape</th></tr></thead>
       <tbody>
-        <tr><td>Context size</td><td class="old">Estimated from tool payloads</td>
-          <td class="new"><b>Real per-step token count</b> from wire.jsonl; estimates only as self-calibrating fallback</td></tr>
-        <tr><td>Cache economics</td><td class="old">Anthropic pricing math, modeled</td>
-          <td class="new"><b>Measured</b> inputCacheRead / inputCacheCreation per step — hit rate and cache breaks, not guesses</td></tr>
-        <tr><td>Failed tool calls</td><td class="old">No failure events</td>
-          <td class="new"><b>PostToolUseFailure</b> tracked as wasted turns on the dashboard</td></tr>
-        <tr><td>Sub-agents</td><td class="old">PPID guessing</td>
-          <td class="new"><b>SubagentStart/Stop events</b> attribute delegation cost precisely</td></tr>
-        <tr><td>Context window</td><td class="old">Hardcoded 200K assumption</td>
-          <td class="new"><b>Read from your config.toml model</b> — 256K on K2.7, 1M on K3 — plus a context-rot warning at ~350K</td></tr>
-        <tr><td>Metrics</td><td class="old">Dollar-first billing math</td>
-          <td class="new"><b>Tokens + % of your window first</b>; $ only if you configure real prices — subscription-honest</td></tr>
-        <tr><td>Memory file</td><td class="old">—</td>
-          <td class="new"><b>AGENTS.md analysis</b> for token bloat, with concrete trims</td></tr>
+        <tr><td class="mono">ReadFile</td><td>Read</td><td class="mono">path, line_offset, n_lines</td></tr>
+        <tr><td class="mono">WriteFile</td><td>Write</td><td>current path plus compatible alias</td></tr>
+        <tr><td class="mono">StrReplaceFile</td><td>Edit</td><td class="mono">path, edit { old, new, replace_all }</td></tr>
+        <tr><td class="mono">Shell</td><td>Bash</td><td>command/output accounting</td></tr>
       </tbody>
     </table>
   </div>
 </section>
 
-<section id="commands">
-  <div class="container reveal">
-    <p class="sec-tag">Commands</p>
-    <h2>19 slash commands. One control center.</h2>
-    <p class="sec-sub">Thin wrappers over the hook data — every number comes from what your
-      sessions actually did.</p>
-    <div class="cmd-grid">
-      <div class="cmd"><code>/kco</code><span>Control Center — budget, savings, waste, prompt grade, next actions</span></div>
-      <div class="cmd"><code>/kco-report</code><span>Full token ROI report across all sessions + file suggestions</span></div>
-      <div class="cmd"><code>/kco-roi</code><span>Monthly savings projection — tokens-first, $ if priced</span></div>
-      <div class="cmd"><code>/kco-digest</code><span>Efficiency digest with S–F grade and trends</span></div>
-      <div class="cmd"><code>/kco-export</code><span>Export the report as Markdown or an HTML dashboard</span></div>
-      <div class="cmd"><code>/kco-clean</code><span>Delete old tracking data / reset stats</span></div>
-      <div class="cmd"><code>/kco-doctor</code><span>Health check: versions, hooks, data dir, config, Node</span></div>
-      <div class="cmd"><code>/kco-replay</code><span>Summaries of your last N sessions for quick context recovery</span></div>
-      <div class="cmd"><code>/kco-task</code><span>Per-task token attribution — see what each task cost</span></div>
-      <div class="cmd"><code>/kco-pack</code><span>Build a minimal, ranked context pack (files + offset/limit) for a task</span></div>
-      <div class="cmd"><code>/kco-templates</code><span>Save and re-apply named context sets for recurring tasks</span></div>
-      <div class="cmd"><code>/kco-git</code><span>Suggest files to read from current git state + history</span></div>
-      <div class="cmd"><code>/kco-anatomy</code><span>One-file project map: every file with size, tokens, category</span></div>
-      <div class="cmd"><code>/kco-shield</code><span>Waste-protection status; grow .contextignore from real waste</span></div>
-      <div class="cmd"><code>/kco-agentsmd</code><span>Audit AGENTS.md for token bloat, get concrete trims</span></div>
-      <div class="cmd"><code>/kco-coach</code><span>Grade a prompt (or recent ones) and offer a rewrite</span></div>
-      <div class="cmd"><code>/kco-overhead</code><span>Audit fixed per-session overhead from the real wire transcript</span></div>
-      <div class="cmd"><code>/kco-smart-loader</code><span>Auto-suggests files to preload when you describe a new task</span></div>
-      <div class="cmd"><code>/kco-budget</code><span>Set budget limits, auto-compact, optional pricing; window-aware</span></div>
+<section id="benchmark">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">Synthetic Counterfactual Benchmark</div>
+      <h2>A benchmark that admits what it is.</h2>
+      <p class="sub">The repository benchmark uses deterministic fixture files and the same gross-minus-overhead accounting identity as runtime. It measures an estimated counterfactual direct-input reduction for those fixtures.</p>
+    </div>
+    <div class="two">
+      <div class="card">
+        <div class="tag">IT DOES</div>
+        <h3>Subtract KCO's own feedback</h3>
+        <ul class="list">
+          <li>Uses actual fixture text ranges.</li>
+          <li>Subtracts model-visible block feedback.</li>
+          <li>Preserves negative net values if overhead wins.</li>
+          <li>Emits machine-readable results with classification <span class="mono">ESTIMATED</span>.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="tag">IT DOES NOT</div>
+        <h3>Invent causal certainty</h3>
+        <ul class="list">
+          <li>No replay multiplier in the savings claim.</li>
+          <li>No cache-read tokens counted as avoided input.</li>
+          <li>No conversion to Kimi subscription credits.</li>
+          <li>No synthetic percentage marketed as live-session truth.</li>
+        </ul>
+      </div>
     </div>
   </div>
 </section>
 
 <section id="install">
-  <div class="container reveal">
-    <p class="sec-tag">Install</p>
-    <h2>Running in under a minute.</h2>
-    <p class="sec-sub">Requires Node.js ≥ 18 on your PATH. No accounts, no API keys, no config
-      to get started.</p>
-    <div class="steps">
-      <div class="step"><div class="step-n">1</div><h3>Install the plugin</h3>
-        <p>From Kimi Code CLI, point at a local path or a git URL.</p>
-        <code>/plugins install https://github.com/egorfedorov/kimi-context-optimizer</code></div>
-      <div class="step"><div class="step-n">2</div><h3>Reload</h3>
-        <p>Hooks and skills register on reload. Updating later = reinstall + reload again.</p>
-        <code>/reload</code></div>
-      <div class="step"><div class="step-n">3</div><h3>Verify</h3>
-        <p>Checks Node version, hook wiring, data dir, and config in one go.</p>
-        <code>/kco-doctor</code></div>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">Install</div>
+      <h2>Point Kimi Code at the hardened fork.</h2>
+      <p class="sub">Requires Node.js 18 or newer. After updating the checkout, reinstall and reload because Kimi runs a managed plugin copy.</p>
     </div>
-    <div class="cfg"><span class="c">// ~/.kimi-context-optimizer/config.json — all optional</span>
-{
-  <span class="k">"budgetTokens"</span>: <span class="n">200000</span>,          <span class="c">// caps to your model's real window</span>
-  <span class="k">"warnAt"</span>: [<span class="n">50</span>, <span class="n">70</span>, <span class="n">85</span>, <span class="n">95</span>],
-  <span class="k">"autoCompactAt"</span>: <span class="n">90</span>,
-  <span class="k">"pricePerMillionInput"</span>: <span class="n">null</span>,  <span class="c">// set real prices to see $</span>
-  <span class="k">"pricePerMillionOutput"</span>: <span class="n">null</span>,
-  <span class="k">"quiet"</span>: <span class="n">false</span>
-}</div>
-  </div>
-</section>
-
-<section id="privacy" style="padding-top:0">
-  <div class="container reveal">
-    <div class="privacy">
-      <div class="priv"><b>Local first</b><span>Everything lives under ~/.kimi-context-optimizer/ — sessions, patterns, config.</span></div>
-      <div class="priv"><b>No telemetry</b><span>No network calls, nothing leaves your machine. /kco-clean --reset-all wipes it all.</span></div>
-      <div class="priv"><b>Zero dependencies</b><span>25 plain Node ≥18 ESM modules. Nothing to audit, nothing to break.</span></div>
-      <div class="priv"><b>MIT licensed</b><span>Ported from claude-context-optimizer with love. Fork it, ship it, own it.</span></div>
-    </div>
+    <pre class="install">/plugins install https://github.com/naytewilson/kimi-context-optimizer
+/reload
+/kco-doctor</pre>
+    <p class="sub">Doctor checks Node, hook wiring, Kimi config, managed-copy drift, transcript access, and whether the wire schema is actually recognized.</p>
   </div>
 </section>
 
 <footer>
-  <div class="container">
-    <div class="foot-row">
-      <span><b style="color:var(--dim)">kimi-context-optimizer</b> — ported from
-        claude-context-optimizer (MIT), adapted natively for Kimi Code CLI.</span>
-      <span><a href="#top">Back to top ↑</a></span>
-    </div>
+  <div class="wrap">
+    <span><strong>kimi-context-optimizer</strong> · MIT · zero runtime dependencies · no KCO telemetry</span>
+    <span><a href="https://github.com/naytewilson/kimi-context-optimizer">GitHub</a></span>
   </div>
 </footer>
-
-<script>
-(function(){
-  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  /* ── Copy install command ── */
-  var btn = document.getElementById('copy-btn');
-  btn.addEventListener('click', function(){
-    var text = document.getElementById('install-cmd').textContent;
-    function ok(){ btn.textContent='Copied ✓'; btn.classList.add('ok');
-      setTimeout(function(){ btn.textContent='Copy'; btn.classList.remove('ok'); },1600); }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(ok, ok);
-    } else {
-      var ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta);
-      ta.select(); try{ document.execCommand('copy'); }catch(e){} document.body.removeChild(ta); ok();
-    }
-  });
-
-  /* ── Hero terminal replay ── */
-  var script = [
-    { t:'$ kimi', c:'t-dim', d:500 },
-    { t:'❯ fix the flaky test in src/tracker.js', c:'t-prompt', type:true, d:700 },
-    { t:'→ Read src/tracker.js — 412 lines, ~3,900 tokens', c:'t-dim', d:900 },
-    { t:'→ Read src/tracker.js', c:'t-dim', d:800 },
-    { t:'⛔ [read-cache] Already loaded tracker.js this session (412 lines, ~3,900 tokens). File unchanged.', c:'t-red', d:500 },
-    { t:'📋 File map (412 lines):', c:'t-teal', d:350 },
-    { t:'     1: import { saveCache } from \'./cache.js\'', c:'t-faint', d:120 },
-    { t:'    42: export function recordCall(call)', c:'t-faint', d:120 },
-    { t:'   118: function estimateTokens(lines, ext)', c:'t-faint', d:120 },
-    { t:'   204: export function buildReport(session)', c:'t-faint', d:120 },
-    { t:'   … 8 more landmarks', c:'t-faint', d:600 },
-    { t:'[budget] context 41% of 1M window · cache hit 87%', c:'t-violet', d:900 },
-    { t:'★ KCO saved 60,055 tokens — 63% of what the context would have held', c:'t-green', d:0 }
-  ];
-  var body = document.getElementById('term-body');
-
-  function line(el){ var s=document.createElement('span'); s.className='ln '+el.c; body.appendChild(s); return s; }
-
-  if (reduced) {
-    script.forEach(function(el){ line(el).textContent = el.t; });
-  } else {
-    var caret = document.createElement('span'); caret.className='caret';
-    function run(i){
-      if (i >= script.length) {
-        setTimeout(function(){ body.innerHTML=''; run(0); }, 5000);
-        return;
-      }
-      var el = script[i], span = line(el);
-      span.appendChild(caret);
-      if (el.type) {
-        var n = 0;
-        span.insertBefore(document.createTextNode(''), caret);
-        (function tick(){
-          if (n <= el.t.length) {
-            span.firstChild.nodeValue = el.t.slice(0, n); n++;
-            setTimeout(tick, 34);
-          } else setTimeout(function(){ run(i+1); }, el.d);
-        })();
-      } else {
-        span.insertBefore(document.createTextNode(el.t), caret);
-        setTimeout(function(){ run(i+1); }, el.d);
-      }
-    }
-    run(0);
-  }
-
-  /* ── Scroll reveal ── */
-  if (reduced || !('IntersectionObserver' in window)) {
-    document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('visible'); });
-  } else {
-    var io = new IntersectionObserver(function(entries){
-      entries.forEach(function(e){
-        if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
-      });
-    }, { threshold: 0.12 });
-    document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
-  }
-})();
-</script>
 </body>
 </html>

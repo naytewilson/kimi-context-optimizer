@@ -17,14 +17,8 @@
  *                    too long (>500 words) often buries the actual ask
  *   6. Ambiguity   — vague verbs (improve, optimise, clean up) without target
  *
- * Output behaviour (Kimi protocol — see docs/hook-payloads.md):
- *   • In hook mode (stdin = JSON event): prints plain-text advisory to STDOUT
- *     via advise() — Kimi injects hook stdout into context as a
- *     <hook_result hook_event="UserPromptSubmit"> block (verified live). This
- *     replaces the original's hookSpecificOutput.additionalContext JSON.
- *     Stays silent if the prompt is already strong (score ≥ 80).
- *   • In CLI mode (`node prompt-coach.js grade "..."`): prints a human-
- *     readable report to stdout (used by the /kco-coach skill).
+ * Hook-mode coaching is routed through the shared notices ledger so every
+ * model-visible coaching token is included in KCO's own overhead accounting.
  */
 
 import { readFileSync, existsSync, appendFileSync, readdirSync } from 'fs';
@@ -33,16 +27,14 @@ import {
   PROMPTS_DIR, ensureDataDirs,
   estimateTokensFromString, isQuietMode
 } from './utils.js';
-import { advise, getPromptText, isMainModule, runHook } from './hook-io.js';
+import { getPromptText, isMainModule, runHook } from './hook-io.js';
+import { emitNotice } from './notices.js';
 
 ensureDataDirs();
-
-// ── Heuristic patterns ───────────────────────────────────────────────────────
 
 const VAGUE_VERBS = [
   'improve', 'optimize', 'optimise', 'clean up', 'refactor', 'better',
   'make it nice', 'fix issues', 'fix problems', 'tidy', 'polish',
-  // Russian
   'улучши', 'улучшить', 'оптимизируй', 'оптимизировать', 'почисти',
   'сделай лучше', 'сделай красиво', 'наведи порядок', 'отрефактори',
 ];
@@ -50,7 +42,6 @@ const VAGUE_VERBS = [
 const STRONG_VERBS = [
   'add', 'remove', 'rename', 'replace', 'extract', 'inline',
   'implement', 'create', 'delete', 'fix', 'debug', 'test', 'document',
-  // Russian imperatives
   'добавь', 'удали', 'убери', 'исправь', 'почини', 'поправь', 'сделай',
   'создай', 'замени', 'переименуй', 'вынеси', 'реализуй', 'напиши',
   'допиши', 'перепиши', 'настрой', 'обнови', 'проверь', 'протестируй',
@@ -80,52 +71,32 @@ const SUCCESS_HINTS = [
   /ошибк[аи]\s+(исчез|пропа)/i,
 ];
 
-// ── Language-aware word matching ────────────────────────────────────────────
-// JS \b is ASCII-only: it never fires between a space and a Cyrillic letter,
-// so `\bдобавь\b` silently matches nothing. Cyrillic words use a plain
-// case-insensitive substring check instead (safe for these imperatives).
-
 const CYRILLIC = /[а-яё]/i;
 function hasWord(text, word) {
   if (CYRILLIC.test(word)) return text.toLowerCase().includes(word);
   return new RegExp(`\\b${word}\\b`, 'i').test(text);
 }
 
-// ── Conversation classifier ─────────────────────────────────────────────────
-// Not every prompt is a task. Grading "спасибо, всё отлично ))" as F and
-// injecting "name the file you want changed" spends the very tokens the
-// optimizer protects — and erodes trust. Classify first, coach only tasks.
-
 const ACK_WORDS = [
-  // English
   'ok', 'okay', 'yes', 'no', 'thanks', 'thank', 'cool', 'nice', 'great',
   'good', 'perfect', 'awesome', 'lgtm', 'sure', 'fine', 'hi', 'hello', 'hey',
   'continue', 'proceed', 'go', 'stop', 'wait', 'bye',
-  // Russian
   'да', 'нет', 'ок', 'окей', 'спасибо', 'спс', 'отлично', 'круто', 'супер',
   'хорошо', 'понял', 'поняла', 'ясно', 'ага', 'угу', 'привет', 'давай',
   'поехали', 'продолжай', 'дальше', 'стоп', 'подожди', 'норм', 'пока',
 ];
 
 const INTERROGATIVES = [
-  // English
   'why', 'how', 'what', 'who', 'when', 'where', 'which', 'can', 'could',
   'should', 'is', 'are', 'does', 'do',
-  // Russian
   'почему', 'зачем', 'откуда', 'как', 'что', 'кто', 'где', 'когда',
   'какой', 'какая', 'какие', 'можно', 'есть',
 ];
 
-/**
- * Classify a prompt as 'chat' (conversational — don't grade),
- * 'question' (legit question — grade leniently, never inject),
- * or 'task' (a work request — full coaching applies).
- */
 export function classifyPrompt(prompt) {
   const trimmed = (prompt || '').trim();
   if (!trimmed) return 'chat';
 
-  // Strip emoji, emoticons ("))", ":)"), and punctuation for word analysis.
   const cleaned = trimmed
     .replace(/[)(:;=~^]+/g, ' ')
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, ' ')
@@ -134,12 +105,9 @@ export function classifyPrompt(prompt) {
 
   const hasTaskVerb = STRONG_VERBS.some(v => hasWord(cleaned, v));
   const hasFilePath = FILE_PATH_REGEX.test(cleaned);
-  FILE_PATH_REGEX.lastIndex = 0; // global regex — reset between uses
+  FILE_PATH_REGEX.lastIndex = 0;
   const hasErrorText = /error|exception|traceback|TypeError|ошибк/i.test(cleaned);
 
-  // Question shape: ends with "?" or opens with an interrogative (optionally
-  // after a filler particle like "а" / "so"). Checked before the chat rule so
-  // short questions ("how does X work?") aren't dismissed as chit-chat.
   const first = (words[0] || '').toLowerCase().replace(/[.,!?…]+$/, '');
   const second = (words[1] || '').toLowerCase().replace(/[.,!?…]+$/, '');
   const isQuestionShape = /\?\s*$/.test(trimmed) ||
@@ -148,7 +116,6 @@ export function classifyPrompt(prompt) {
 
   if (!hasTaskVerb && isQuestionShape) return 'question';
 
-  // Chat: short, no task verb, no file, no error — acknowledgments, reactions.
   if (!hasTaskVerb && !hasFilePath && !hasErrorText) {
     if (words.length <= 6) return 'chat';
     const lower = words.map(w => w.toLowerCase().replace(/[.,!?…]+$/, ''));
@@ -165,16 +132,12 @@ const TECH_HINTS = [
   /\bfailed\s+with\b/i,
   /\bcrash(es|ed)?\b/i,
   /Cannot read prop|TypeError|ReferenceError|SyntaxError/,
-  /\bv?\d+\.\d+(\.\d+)?\b/, // version numbers
+  /\bv?\d+\.\d+(\.\d+)?\b/,
 ];
 
-// File-path-like substrings: src/foo.ts, tests/bar.spec.js, /Users/.../foo, ./bar.py
-// Allows multi-dot names like foo.spec.js by matching .ext greedily until last segment.
 const FILE_PATH_REGEX = /(?:[a-zA-Z0-9_./-]*\/)?[a-zA-Z0-9_-]+(?:\.[a-zA-Z][a-zA-Z0-9]{0,7})+\b/g;
 const LINE_REF_REGEX = /:\d+(?::\d+)?\b/;
 const IDENTIFIER_REGEX = /\b[a-z][a-zA-Z0-9_]+\(\)|`[^`]+`|\b[A-Z][a-zA-Z0-9]+(?:\.[a-zA-Z0-9_]+)+\b/;
-
-// ── Analyzer ─────────────────────────────────────────────────────────────────
 
 export function analyzePrompt(prompt) {
   if (!prompt || typeof prompt !== 'string') {
@@ -185,7 +148,6 @@ export function analyzePrompt(prompt) {
   const words = trimmed.split(/\s+/).filter(Boolean);
   const wordCount = words.length;
 
-  // ── Detect signals ──
   const filePathMatches = (trimmed.match(FILE_PATH_REGEX) || []).filter(s =>
     !s.startsWith('http') && !s.endsWith('.com') && !s.endsWith('.io')
   );
@@ -199,7 +161,6 @@ export function analyzePrompt(prompt) {
   const hasCodeBlock = /```/.test(trimmed);
   const hasQuestionMark = /\?/.test(trimmed);
 
-  // ── Score components (each 0–100) ──
   const specificity = Math.min(100,
     (filePathMatches.length > 0 ? 35 : 0) +
     (hasLineRef ? 15 : 0) +
@@ -214,20 +175,11 @@ export function analyzePrompt(prompt) {
     (wordCount >= 8 && wordCount <= 200 ? 20 : 0)
   );
 
-  const successCriteria = hasSuccess ? 100 :
-    (hasTechContext ? 60 : 30);
+  const successCriteria = hasSuccess ? 100 : (hasTechContext ? 60 : 30);
+  const lengthScore = wordCount < 4 ? 0 : wordCount < 10 ? 40 : wordCount > 500 ? 50 : 100;
 
-  const lengthScore = wordCount < 4 ? 0 :
-    wordCount < 10 ? 40 :
-    wordCount > 500 ? 50 :
-    100;
-
-  // Weighted overall (specificity matters most for prompt quality)
   const score = Math.max(0, Math.round(
-    specificity      * 0.35 +
-    scope            * 0.30 +
-    successCriteria  * 0.20 +
-    lengthScore      * 0.15
+    specificity * 0.35 + scope * 0.30 + successCriteria * 0.20 + lengthScore * 0.15
   ));
 
   let grade;
@@ -238,9 +190,7 @@ export function analyzePrompt(prompt) {
   else if (score >= 35) grade = 'D';
   else grade = 'F';
 
-  // ── Suggestions (concrete, actionable) ──
   const suggestions = [];
-
   if (specificity < 50 && filePathMatches.length === 0 && !hasIdentifier) {
     suggestions.push('Name the specific file(s), function(s), or module(s) you want changed (e.g. `src/auth/login.ts:42`).');
   }
@@ -264,9 +214,7 @@ export function analyzePrompt(prompt) {
     suggestions.push('Open question without a target — be explicit if you want Kimi to plan, implement, or just answer.');
   }
 
-  // Detect inferred file path candidates the user may want to load
   const inferredFiles = [...new Set(filePathMatches)].slice(0, 8);
-
   return {
     score,
     grade,
@@ -283,15 +231,10 @@ export function analyzePrompt(prompt) {
   };
 }
 
-/** Build an enhanced version of the user's prompt by appending guardrails. */
 export function buildImprovedPrompt(prompt, analysis) {
   const lines = [prompt.trim()];
-
   if (analysis.suggestions.length === 0) return prompt;
-
-  lines.push('');
-  lines.push('---');
-  lines.push('Self-check before answering:');
+  lines.push('', '---', 'Self-check before answering:');
   if (analysis.signals.specificity < 50) {
     lines.push('- I will identify the exact files/lines I plan to change before editing.');
   }
@@ -304,28 +247,19 @@ export function buildImprovedPrompt(prompt, analysis) {
   return lines.join('\n');
 }
 
-// ── Hook mode ────────────────────────────────────────────────────────────────
-
 function logPrompt(sessionId, prompt, analysis, kind = 'task') {
   try {
     const file = join(PROMPTS_DIR, `${sessionId}.jsonl`);
     const entry = JSON.stringify({
-      ts: new Date().toISOString(),
-      kind,
-      score: analysis.score,
-      grade: analysis.grade,
-      wordCount: analysis.wordCount,
-      signals: analysis.signals,
-      suggestions: analysis.suggestions,
+      ts: new Date().toISOString(), kind,
+      score: analysis.score, grade: analysis.grade, wordCount: analysis.wordCount,
+      signals: analysis.signals, suggestions: analysis.suggestions,
       preview: prompt.slice(0, 200),
     }) + '\n';
-    // True append: O(1) per prompt and never rewrites (a crash mid-write
-    // can't truncate earlier entries, unlike read+concat+write).
     appendFileSync(file, entry);
-  } catch { /* best-effort */ }
+  } catch { /* best effort */ }
 }
 
-/** Count previously logged prompts this session (0 = this is the opener). */
 function priorPromptCount(sessionId) {
   try {
     const file = join(PROMPTS_DIR, `${sessionId}.jsonl`);
@@ -337,12 +271,8 @@ function priorPromptCount(sessionId) {
 async function hookMain(payload) {
   if (payload.hook_event_name !== 'UserPromptSubmit') return;
 
-  // Kimi sends `prompt` as an ARRAY of content parts — getPromptText handles it.
   const prompt = getPromptText(payload);
   const sessionId = payload.session_id || 'unknown';
-
-  // Classify BEFORE grading. Conversational replies and questions are not
-  // weak task prompts — coaching them injects noise (and tokens) for nothing.
   const kind = classifyPrompt(prompt);
 
   if (kind === 'chat') {
@@ -350,24 +280,13 @@ async function hookMain(payload) {
     return;
   }
 
-  const priors = priorPromptCount(sessionId); // before logging this one
+  const priors = priorPromptCount(sessionId);
   const analysis = analyzePrompt(prompt);
   logPrompt(sessionId, prompt, analysis, kind);
-
-  // Questions get graded for history but never coached — "name the file you
-  // want changed" is meaningless advice for "why did X happen?".
   if (kind === 'question') return;
-
-  // Strong prompt or quiet mode — stay silent.
   if (analysis.score >= 80 || isQuietMode()) return;
-
-  // Follow-up leniency: mid-conversation, short prompts lean on context that
-  // is already loaded. Only coach follow-ups that are truly unbounded.
   if (priors > 0 && analysis.wordCount < 12 && !analysis.signals.hasUnbounded) return;
 
-  // Weak prompt — inject coaching as plain-text advisory. Kimi appends hook
-  // stdout to the context as a <hook_result> block (verified live), so this
-  // replaces the original's hookSpecificOutput.additionalContext JSON.
   const top = analysis.suggestions.slice(0, 3);
   if (top.length === 0) return;
 
@@ -382,10 +301,11 @@ async function hookMain(payload) {
   lines.push('');
   lines.push('Apply these mentally before reading files. If the prompt is too vague, ask one clarifying question instead of guessing.');
 
-  advise(lines.join('\n'));
+  emitNotice(sessionId, {
+    kind: `prompt-coach:${priors === 0 ? 'opening' : 'followup'}`,
+    text: lines.join('\n'),
+  });
 }
-
-// ── CLI mode ─────────────────────────────────────────────────────────────────
 
 function cliReport(analysis) {
   const out = [];
@@ -399,16 +319,12 @@ function cliReport(analysis) {
   out.push(`    Scope ............... ${String(analysis.signals.scope).padStart(3)}/100`);
   out.push(`    Success criteria .... ${String(analysis.signals.successCriteria).padStart(3)}/100`);
   out.push(`    Length .............. ${String(analysis.signals.lengthScore).padStart(3)}/100`);
-  if (analysis.signals.filePathsFound.length > 0) {
-    out.push(`    Files mentioned ..... ${analysis.signals.filePathsFound.join(', ')}`);
-  }
+  if (analysis.signals.filePathsFound.length > 0) out.push(`    Files mentioned ..... ${analysis.signals.filePathsFound.join(', ')}`);
   if (analysis.suggestions.length > 0) {
-    out.push('');
-    out.push('  Suggestions:');
+    out.push('', '  Suggestions:');
     for (const s of analysis.suggestions) out.push(`    - ${s}`);
   } else {
-    out.push('');
-    out.push('  Strong prompt. No suggestions.');
+    out.push('', '  Strong prompt. No suggestions.');
   }
   out.push('');
   return out.join('\n');
@@ -447,9 +363,6 @@ function showHistory(count = 10) {
 
 function cliMain() {
   const action = process.argv[2];
-
-  // `grade` is the canonical name used by the /kco-coach skill; `analyze`
-  // kept as an alias.
   if (action === 'grade' || action === 'analyze') {
     const text = process.argv.slice(3).join(' ');
     if (!text) {
@@ -459,31 +372,23 @@ function cliMain() {
     console.log(cliReport(analyzePrompt(text)));
     return;
   }
-
   if (action === 'history') {
     showHistory(parseInt(process.argv[3], 10) || 10);
     return;
   }
-
   if (action === 'improve') {
     const text = process.argv.slice(3).join(' ');
     if (!text) {
       console.error('Usage: node src/prompt-coach.js improve "<prompt text>"');
       process.exit(1);
     }
-    const a = analyzePrompt(text);
-    console.log(buildImprovedPrompt(text, a));
+    console.log(buildImprovedPrompt(text, analyzePrompt(text)));
     return;
   }
-
-  // Default: hook mode (read JSON event from stdin, fail-open).
   runHook(hookMain);
 }
 
 if (isMainModule(import.meta.url)) {
-  try {
-    cliMain();
-  } catch {
-    process.exit(0); // hooks must never crash the session
-  }
+  try { cliMain(); }
+  catch { process.exit(0); }
 }
