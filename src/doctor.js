@@ -12,6 +12,7 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 import {
   DATA_DIR, formatTokens, getPluginVersion, isMainModule
 } from './utils.js';
@@ -47,7 +48,7 @@ export function classifyWireContracts(wirePaths = []) {
   };
 }
 
-function findWireTranscripts(limit = 3) {
+function findWireTranscripts(limit = 10) {
   const sessionsRoot = join(getKimiHome(), 'sessions');
   const paths = [];
   let visited = 0;
@@ -149,7 +150,7 @@ function runChecks() {
   });
 
   check('wire transcripts reachable', () => {
-    const paths = findWireTranscripts(3);
+    const paths = findWireTranscripts(10);
     if (paths.length === 0) {
       return { warn: 'no wire.jsonl found under sessions/ — ground truth unavailable, estimation fallback active' };
     }
@@ -168,8 +169,12 @@ function runChecks() {
   });
 
   check('managed plugin copy in sync', () => {
-    const managed = join(getKimiHome(), 'plugins', 'managed', 'kimi-context-optimizer', 'kimi.plugin.json');
-    if (!existsSync(managed)) return `no managed copy installed (running from source at ${ROOT})`;
+    // Default path under KIMI_CODE_HOME (Linux and some macOS installs)
+    const defaultManaged = join(getKimiHome(), 'plugins', 'managed', 'kimi-context-optimizer', 'kimi.plugin.json');
+    // macOS Kimi Desktop stores plugins under Application Support
+    const macosManaged = join(homedir(), 'Library', 'Application Support', 'kimi-desktop', 'daimon-share', 'daimon', 'runtime', 'kimi-code', 'home', 'plugins', 'managed', 'kimi-context-optimizer', 'kimi.plugin.json');
+    const managed = existsSync(defaultManaged) ? defaultManaged : (existsSync(macosManaged) ? macosManaged : null);
+    if (!managed || !existsSync(managed)) return `no managed copy installed (running from source at ${ROOT})`;
     let managedVersion;
     try { managedVersion = readJSON(managed).version; }
     catch (e) { return { warn: `managed copy manifest unreadable: ${e.message}` }; }
