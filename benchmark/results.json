@@ -1,0 +1,62 @@
+{
+  "classification": "ESTIMATED",
+  "metric": "counterfactual_direct_input_tokens",
+  "generatedAt": "2026-09-03T00:28:37.696Z",
+  "totalGrossAvoidedTokensEstimated": 45778,
+  "totalOverheadTokensEstimated": 855,
+  "totalNetAvoidedTokensEstimated": 44923,
+  "scenarios": [
+    {
+      "name": "One redundant large-module read",
+      "file": "large-module.js",
+      "blockedReads": 1,
+      "grossAvoidedTokensEstimated": 5294,
+      "overheadTokensEstimated": 80,
+      "netAvoidedTokensEstimated": 5214,
+      "classification": "ESTIMATED"
+    },
+    {
+      "name": "Four redundant large-module reads",
+      "file": "large-module.js",
+      "blockedReads": 4,
+      "grossAvoidedTokensEstimated": 21176,
+      "overheadTokensEstimated": 320,
+      "netAvoidedTokensEstimated": 20856,
+      "classification": "ESTIMATED"
+    },
+    {
+      "name": "Two redundant config reads",
+      "file": "config.json",
+      "blockedReads": 2,
+      "grossAvoidedTokensEstimated": 7036,
+      "overheadTokensEstimated": 302,
+      "netAvoidedTokensEstimated": 6734,
+      "classification": "ESTIMATED"
+    },
+    {
+      "name": "Two redundant documentation reads",
+      "file": "README.md",
+      "blockedReads": 2,
+      "grossAvoidedTokensEstimated": 3610,
+      "overheadTokensEstimated": 124,
+      "netAvoidedTokensEstimated": 3486,
+      "classification": "ESTIMATED"
+    },
+    {
+      "name": "One policy-blocked lockfile read",
+      "file": "package-lock.json",
+      "blockedReads": 1,
+      "grossAvoidedTokensEstimated": 8662,
+      "overheadTokensEstimated": 29,
+      "netAvoidedTokensEstimated": 8633,
+      "classification": "ESTIMATED"
+    }
+  ],
+  "limitations": [
+    "Synthetic deterministic repository fixtures, not a live Kimi A/B experiment.",
+    "Blocked-read token volume is counterfactual and estimated from actual fixture text.",
+    "Model-visible KCO feedback overhead is subtracted from gross avoided input.",
+    "No replay or prompt-cache multiplier is applied to claimed savings.",
+    "No conversion from raw tokens to Kimi subscription credits is attempted."
+  ]
+}
