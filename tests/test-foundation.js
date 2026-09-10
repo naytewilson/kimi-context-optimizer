@@ -111,12 +111,12 @@ test('wire-usage: getSessionUsage reads last step.end for contextTokens', () => 
   assert.equal(u.lastStepAt, '2026-07-18T01:01:00.000Z');
 });
 
-test('wire-usage: findWireFile falls back to recent wire matching cwd basename', () => {
-  // Unknown session id — exact lookup misses; fallback should find the fixture
-  // because the wd_ dir contains the cwd basename ("myproj").
+test('wire-usage: findWireFile refuses an unrelated fallback for an unknown session', () => {
+  // Exact hook session ids are authority. An unrelated recent transcript must
+  // never be borrowed merely because its working-directory slug looks close.
+  buildWireFixture();
   const found = wireUsage.findWireFile('session_does-not-exist', '/tmp/myproj');
-  assert.ok(found && found.endsWith('wire.jsonl'), `expected a wire path, got ${found}`);
-  assert.ok(found.includes(SESSION_ID));
+  assert.equal(found, null);
 });
 
 test('wire-usage: getRecentToolOutputs returns last N outputs', () => {
@@ -128,7 +128,6 @@ test('wire-usage: getRecentToolOutputs returns last N outputs', () => {
 });
 
 test('wire-usage: missing file → all defaults, never throws', () => {
-  // Point KIMI_CODE_HOME at an empty dir so even the fallback finds nothing.
   const emptyHome = mkdtempSync(join(tmpdir(), 'kco-kimi-empty-'));
   mkdirSync(join(emptyHome, 'sessions'), { recursive: true });
   const prev = process.env.KIMI_CODE_HOME;
@@ -138,8 +137,9 @@ test('wire-usage: missing file → all defaults, never throws', () => {
     const u = wireUsage.getSessionUsage('session_nope', '/tmp/nowhere');
     assert.deepEqual(u, {
       contextTokens: 0, totalInput: 0, totalOutput: 0,
-      totalCacheRead: 0, totalCacheCreation: 0, cacheHitRate: 0,
-      steps: 0, model: null, systemPromptChars: 0, lastStepAt: null,
+      totalCacheRead: 0, totalCacheCreation: 0, totalInputSide: 0, cacheHitRate: 0,
+      steps: 0, recognizedUsageRows: 0, wireSchemas: [],
+      model: null, systemPromptChars: 0, lastStepAt: null,
     });
     assert.deepEqual(wireUsage.getRecentToolOutputs('session_nope', '/tmp/nowhere', 5), []);
   } finally {

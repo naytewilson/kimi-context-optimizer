@@ -1,72 +1,62 @@
 {
-  "timestamp": "2026-07-18T02:30:33.111Z",
-  "version": "1.0.0",
-  "totalSavingsPercent": 63,
-  "totalTokensWithout": 95514,
-  "totalTokensWith": 35459,
+  "classification": "ESTIMATED",
+  "metric": "counterfactual_direct_input_tokens",
+  "generatedAt": "2026-09-03T00:28:37.696Z",
+  "totalGrossAvoidedTokensEstimated": 45778,
+  "totalOverheadTokensEstimated": 855,
+  "totalNetAvoidedTokensEstimated": 44923,
   "scenarios": [
     {
-      "name": "Read Cache Dedup",
-      "description": "Second read of same file → file digest instead of full content",
-      "withoutKCO": 9082,
-      "withKCO": 4571,
-      "savingsPercent": 50
+      "name": "One redundant large-module read",
+      "file": "large-module.js",
+      "blockedReads": 1,
+      "grossAvoidedTokensEstimated": 5294,
+      "overheadTokensEstimated": 80,
+      "netAvoidedTokensEstimated": 5214,
+      "classification": "ESTIMATED"
     },
     {
-      "name": "Read Cache (5x reads)",
-      "description": "File read 5 times in a session",
-      "withoutKCO": 22705,
-      "withKCO": 4661,
-      "savingsPercent": 79
+      "name": "Four redundant large-module reads",
+      "file": "large-module.js",
+      "blockedReads": 4,
+      "grossAvoidedTokensEstimated": 21176,
+      "overheadTokensEstimated": 320,
+      "netAvoidedTokensEstimated": 20856,
+      "classification": "ESTIMATED"
     },
     {
-      "name": "File Digest vs Full Read",
-      "description": "Navigational digest (~landmarks) vs full file content",
-      "withoutKCO": 4541,
-      "withKCO": 30,
-      "savingsPercent": 99
+      "name": "Two redundant config reads",
+      "file": "config.json",
+      "blockedReads": 2,
+      "grossAvoidedTokensEstimated": 7036,
+      "overheadTokensEstimated": 302,
+      "netAvoidedTokensEstimated": 6734,
+      "classification": "ESTIMATED"
     },
     {
-      "name": "Read Cache Dedup",
-      "description": "Second read of same file → file digest instead of full content",
-      "withoutKCO": 12076,
-      "withKCO": 6140,
-      "savingsPercent": 49
+      "name": "Two redundant documentation reads",
+      "file": "README.md",
+      "blockedReads": 2,
+      "grossAvoidedTokensEstimated": 3610,
+      "overheadTokensEstimated": 124,
+      "netAvoidedTokensEstimated": 3486,
+      "classification": "ESTIMATED"
     },
     {
-      "name": "Contextignore Block",
-      "description": "Lockfile/generated file blocked entirely by .contextignore",
-      "withoutKCO": 8827,
-      "withKCO": 0,
-      "savingsPercent": 100
-    },
-    {
-      "name": "File Digest vs Full Read",
-      "description": "Navigational digest (~landmarks) vs full file content",
-      "withoutKCO": 3117,
-      "withKCO": 13,
-      "savingsPercent": 100
-    },
-    {
-      "name": "Typical Session (10 files, 45 min)",
-      "description": "Realistic coding session with mixed reads/edits across 10 files",
-      "withoutKCO": 35166,
-      "withKCO": 20044,
-      "savingsPercent": 43
+      "name": "One policy-blocked lockfile read",
+      "file": "package-lock.json",
+      "blockedReads": 1,
+      "grossAvoidedTokensEstimated": 8662,
+      "overheadTokensEstimated": 29,
+      "netAvoidedTokensEstimated": 8633,
+      "classification": "ESTIMATED"
     }
   ],
-  "cacheEconomics": [
-    {
-      "name": "Redundant re-reads avoided (150K ctx)",
-      "description": "3 blocked re-reads/day keep 150K tokens in the cheap inputCacheRead bucket",
-      "tokensPerDay": 450000,
-      "rereadsPerDay": 3
-    },
-    {
-      "name": "Redundant re-reads avoided (400K ctx)",
-      "description": "3 blocked re-reads/day keep 400K tokens in the cheap inputCacheRead bucket",
-      "tokensPerDay": 1200000,
-      "rereadsPerDay": 3
-    }
+  "limitations": [
+    "Synthetic deterministic repository fixtures, not a live Kimi A/B experiment.",
+    "Blocked-read token volume is counterfactual and estimated from actual fixture text.",
+    "Model-visible KCO feedback overhead is subtracted from gross avoided input.",
+    "No replay or prompt-cache multiplier is applied to claimed savings.",
+    "No conversion from raw tokens to Kimi subscription credits is attempted."
   ]
 }

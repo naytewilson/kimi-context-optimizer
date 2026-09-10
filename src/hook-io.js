@@ -1,49 +1,28 @@
 /**
- * Hook protocol helpers for Kimi Code hooks (KCO port).
+ * Hook protocol helpers for Kimi Code hooks.
  *
- * Kimi Code hook protocol (verified by live capture — see docs/hook-payloads.md):
- *   - Payload arrives as JSON on stdin: { hook_event_name, session_id, cwd,
- *     tool_name, tool_input, tool_call_id, tool_output, prompt, source, reason, error }.
- *     Read tool input uses `path` (NOT `file_path`); `prompt` in UserPromptSubmit
- *     is an ARRAY of content parts, not a string.
- *   - Block (PreToolUse / Stop / UserPromptSubmit only): reason to STDERR + exit 2.
- *     The model receives the reason as the tool error.
- *   - Advise: text to STDOUT + exit 0 — injected into context as a
- *     `<hook_result hook_event="...">…</hook_result>` block (verified for
- *     UserPromptSubmit; best-effort elsewhere).
- *   - Fail-open: a hook must never crash the session. Any uncaught error,
- *     non-zero≠2 exit, or timeout lets the action through. runHook() enforces this.
- *
- * Pure ESM, zero dependencies.
+ * Kimi's hook/tool surface changed after the July 2026 live capture this fork
+ * was originally ported from. Current Kimi source uses ReadFile/WriteFile/
+ * StrReplaceFile/Shell. ReadFile uses path + line_offset/n_lines and current
+ * StrReplaceFile uses path + edit:{old,new,replace_all} (or an edit array).
+ * Older captures used Read/Edit/Write/Bash with path + offset/limit and flat
+ * old/new fields. KCO normalizes both generations at one boundary.
  */
 
 import { isAbsolute, resolve } from 'node:path';
-
 import { isMainModule } from './utils.js';
 
-// ── stdin ────────────────────────────────────────────────────────────────────
-
-/**
- * Read the hook payload from stdin and parse it as JSON.
- * Returns {} when there is no input, the input is malformed, or the 25s
- * safety timeout fires (resolving with whatever arrived so far — hooks must
- * fail open, never hang the session).
- */
 export function readPayload() {
-  return new Promise((resolve) => {
-    // Not a TTY check: if stdin is already ended (no piped input) resolve fast.
+  return new Promise((resolvePayload) => {
     let raw = '';
     let settled = false;
     const done = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (!raw.trim()) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        resolve({});
-      }
+      if (!raw.trim()) return resolvePayload({});
+      try { resolvePayload(JSON.parse(raw)); }
+      catch { resolvePayload({}); }
     };
     const timer = setTimeout(done, 25_000);
     timer.unref?.();
@@ -52,39 +31,142 @@ export function readPayload() {
     process.stdin.on('end', done);
     process.stdin.on('error', done);
     process.stdin.resume();
-    // Some environments deliver nothing and no 'end' — the timer covers that.
   });
 }
 
-// ── Responses ────────────────────────────────────────────────────────────────
-
-/**
- * Block the current action: reason on stderr, exit code 2.
- * Only valid for blockable events (PreToolUse, Stop, UserPromptSubmit).
- */
 export function block(reason) {
   console.error(reason);
   process.exit(2);
 }
 
-/**
- * Emit advisory text on stdout. The caller then exits 0 — Kimi injects the
- * stdout into context as a <hook_result> block (verified for UserPromptSubmit,
- * best-effort elsewhere).
- */
 export function advise(text) {
   process.stdout.write(String(text) + '\n');
 }
 
-// ── Payload accessors ────────────────────────────────────────────────────────
+const TOOL_ALIASES = Object.freeze({
+  ReadFile: 'Read',
+  Read: 'Read',
+  WriteFile: 'Write',
+  Write: 'Write',
+  StrReplaceFile: 'Edit',
+  Edit: 'Edit',
+  Shell: 'Bash',
+  Bash: 'Bash',
+});
+
+export function canonicalToolName(name) {
+  return TOOL_ALIASES[name] || name || '';
+}
+
+export function getToolPath(toolInput) {
+  if (!toolInput || typeof toolInput !== 'object') return '';
+  const p = toolInput.path ?? toolInput.file_path;
+  return typeof p === 'string' ? p : '';
+}
 
 /**
- * Resolve a tool_input path against the session cwd from the payload.
- * Plugin hooks run with cwd = the plugin root (NOT the session's project
- * directory), so a relative path like "app.js" would otherwise resolve
- * against the wrong directory — silently breaking mtime checks and cache
- * keys for every relative Read/Edit/Write the model makes.
+ * Normalize current ReadFile line_offset/n_lines and legacy offset/limit to a
+ * zero-based requested [offset,end) range.
+ *
+ * Positive offsets are deliberately NOT clamped to EOF. An out-of-range request
+ * must remain distinguishable from an already-covered range so KCO does not
+ * intercept a tool call that Kimi itself should answer/error. totalLines is
+ * used only to resolve negative line_offset and to shrink an in-file request
+ * to the amount that can actually be returned.
  */
+export function getReadRange(toolInput = {}, totalLines = 0) {
+  const hasCurrentOffset = Number.isFinite(toolInput.line_offset);
+  const hasLegacyOffset = Number.isFinite(toolInput.offset);
+  let offset = 0;
+
+  if (hasCurrentOffset) {
+    const raw = Math.trunc(toolInput.line_offset);
+    if (raw < 0 && totalLines > 0) offset = Math.max(0, totalLines + raw);
+    else if (raw > 0) offset = raw - 1;
+  } else if (hasLegacyOffset) {
+    offset = Math.max(0, Math.trunc(toolInput.offset));
+  }
+
+  let limit;
+  if (Number.isFinite(toolInput.n_lines)) limit = Math.max(0, Math.trunc(toolInput.n_lines));
+  else if (Number.isFinite(toolInput.limit)) limit = Math.max(0, Math.trunc(toolInput.limit));
+  else limit = 1000;
+
+  if (totalLines > 0 && offset < totalLines) {
+    limit = Math.min(limit, Math.max(0, totalLines - offset));
+  }
+
+  return { offset, limit, end: offset + limit };
+}
+
+function flattenEdits(edit) {
+  const edits = Array.isArray(edit) ? edit : (edit && typeof edit === 'object' ? [edit] : []);
+  return edits.filter((item) => item && typeof item === 'object');
+}
+
+/**
+ * Normalize a hook payload for legacy KCO core modules without discarding the
+ * original tool name or current fields. This is intentionally additive.
+ *
+ * For StrReplaceFile, flat old_string/new_string are synthesized only for
+ * token-size estimation. The real nested edit object remains intact.
+ */
+export function normalizeHookPayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return {};
+
+  const originalToolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+  const toolName = canonicalToolName(originalToolName);
+  const sourceInput = payload.tool_input && typeof payload.tool_input === 'object'
+    ? payload.tool_input : {};
+  const toolInput = { ...sourceInput };
+
+  const path = getToolPath(sourceInput);
+  if (path) {
+    if (typeof toolInput.path !== 'string') toolInput.path = path;
+    if (typeof toolInput.file_path !== 'string') toolInput.file_path = path;
+  }
+
+  if (toolName === 'Read') {
+    // Preserve current fields while synthesizing the older zero-based shape.
+    // Negative current offsets cannot be converted without the file length, so
+    // leave `offset` unset in that case; read-cache resolves them with disk truth.
+    if (!Number.isFinite(toolInput.offset) && Number.isFinite(sourceInput.line_offset)) {
+      const raw = Math.trunc(sourceInput.line_offset);
+      if (raw > 0) toolInput.offset = raw - 1;
+    }
+    if (!Number.isFinite(toolInput.limit) && Number.isFinite(sourceInput.n_lines)) {
+      toolInput.limit = Math.max(0, Math.trunc(sourceInput.n_lines));
+    }
+  }
+
+  if (toolName === 'Edit') {
+    const edits = flattenEdits(sourceInput.edit);
+    if (edits.length) {
+      if (typeof toolInput.old_string !== 'string') {
+        toolInput.old_string = edits.map((e) => typeof e.old === 'string' ? e.old : '').join('\n');
+      }
+      if (typeof toolInput.new_string !== 'string') {
+        toolInput.new_string = edits.map((e) => typeof e.new === 'string' ? e.new : '').join('\n');
+      }
+    } else {
+      // Defensive support for recent/alternate flat spellings.
+      if (typeof toolInput.old_string !== 'string' && typeof sourceInput.old_str === 'string') {
+        toolInput.old_string = sourceInput.old_str;
+      }
+      if (typeof toolInput.new_string !== 'string' && typeof sourceInput.new_str === 'string') {
+        toolInput.new_string = sourceInput.new_str;
+      }
+    }
+  }
+
+  return {
+    ...payload,
+    tool_name: toolName,
+    tool_input: toolInput,
+    kco_original_tool_name: originalToolName || toolName,
+  };
+}
+
 export function resolvePayloadPath(payload, p) {
   if (!p || typeof p !== 'string') return '';
   if (isAbsolute(p)) return p;
@@ -92,40 +174,21 @@ export function resolvePayloadPath(payload, p) {
   return resolve(cwd, p);
 }
 
-/**
- * Extract the user's prompt text from a UserPromptSubmit payload.
- * Kimi sends `prompt` as an array of content parts — take part[0].text,
- * falling back to joining all text parts, then to a plain string.
- */
 export function getPromptText(payload) {
   const p = payload && payload.prompt;
   if (!p) return '';
   if (typeof p === 'string') return p;
   if (Array.isArray(p)) {
-    const texts = p
+    return p
       .map((part) => (part && typeof part.text === 'string' ? part.text : ''))
-      .filter(Boolean);
-    return texts.join('\n');
+      .filter(Boolean)
+      .join('\n');
   }
   return '';
 }
 
-// ── Lifecycle ────────────────────────────────────────────────────────────────
-
-// Re-exported so hook modules can import the whole protocol surface from one
-// place. Semantics: true only when the module is the process entry point
-// (`node src/foo.js`), false when imported (e.g. by tests — importing a hook
-// module must NOT start reading stdin or the test process hangs).
 export { isMainModule };
 
-/**
- * Run a hook main function with fail-open semantics: any throw is swallowed
- * and the process exits 0, so a broken hook can never crash the session.
- *
- * Usage in hook modules:
- *   if (isMainModule(import.meta.url)) runHook(main);
- * where main(payload) is the hook body.
- */
 export async function runHook(main) {
   try {
     const payload = await readPayload();

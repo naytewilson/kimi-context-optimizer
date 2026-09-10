@@ -27,7 +27,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test tests/",
+    "test": "node --test tests/test-*.js",
     "sync-version": "node scripts/sync-version.js"
   },
   "license": "MIT"

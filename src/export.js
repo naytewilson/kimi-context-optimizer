@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * KCO Report Exporter (/kco-export).
+ * KCO historical report exporter (/kco-export).
  *
- * Exports context optimizer reports as Markdown or HTML
- * for sharing or archiving.
- *
- * Port notes (vs the original claude-context-optimizer export.js):
- *   - TOKENS FIRST, KCO branding, no Claude references.
- *   - $ figures appear only when pricing is configured (getPricing()).
+ * Exported `global-stats.json` values are tracker-derived historical heuristics.
+ * The legacy field `estimatedTokensSaved` is rendered only as estimated
+ * historical unused-read volume. Runtime blocked-read savings live in a
+ * separate ledger and are not inferred from these cross-session aggregates.
  */
 
 import { writeFileSync } from 'fs';
@@ -16,10 +14,17 @@ import { basename, join } from 'path';
 import {
   GLOBAL_STATS_FILE, EXPORTS_DIR,
   formatTokens, loadJSON, ensureDataDirs, isMainModule,
-  getPricing, computeCost, formatCost, DONATION_ADDRESSES,
+  getPricing, computeCost, formatCost,
 } from './utils.js';
 
 ensureDataDirs();
+
+function historicalSummary(stats) {
+  const total = stats.totalTokensTracked || 0;
+  const unused = stats.estimatedTokensSaved || 0;
+  const pct = total > 0 ? Math.min(100, Math.round((unused / total) * 100)) : 0;
+  return { total, unused, pct };
+}
 
 function exportMarkdown() {
   const stats = loadJSON(GLOBAL_STATS_FILE);
@@ -28,64 +33,63 @@ function exportMarkdown() {
     return;
   }
 
+  const { total, unused, pct } = historicalSummary(stats);
   const pricing = getPricing();
   const date = new Date().toISOString().split('T')[0];
-  let md = `# KCO Context Optimizer Report — ${date}\n\n`;
+  let md = `# KCO Historical Context Report — ${date}\n\n`;
+  md += `> **Evidence class: ESTIMATED HISTORICAL HEURISTIC.** `;
+  md += `Estimated historical unused-read volume is not the runtime blocked-read savings ledger and is not a direct measurement of Kimi subscription quota.\n\n`;
 
   md += `## Overview\n\n`;
-  md += `| Metric | Value |\n|--------|-------|\n`;
+  md += `| Metric | Value |\n|---|---:|\n`;
   md += `| Sessions tracked | ${stats.totalSessions} |\n`;
-  md += `| Total tokens | ${formatTokens(stats.totalTokensTracked)} |\n`;
-  md += `| Tokens wasted | ${formatTokens(stats.estimatedTokensSaved)} |\n`;
-  md += `| Waste ratio | ${stats.totalTokensTracked > 0 ? Math.round((stats.estimatedTokensSaved / stats.totalTokensTracked) * 100) : 0}% |\n`;
-  md += `| Avg tokens/session | ${formatTokens(stats.avgTokensPerSession)} |\n`;
+  md += `| Total tracked token volume | ${formatTokens(total)} |\n`;
+  md += `| Estimated historical unused-read volume | ${formatTokens(unused)} |\n`;
+  md += `| Historical unused-read ratio | ${pct}% |\n`;
+  md += `| Avg tracked tokens/session | ${formatTokens(stats.avgTokensPerSession || 0)} |\n`;
+  md += `| Files read / edited | ${stats.totalFilesRead || 0} / ${stats.totalFilesEdited || 0} |\n`;
   if (pricing.input !== null) {
-    md += `| Est. saveable (at $${pricing.input}/1M) | ${formatCost(computeCost(stats.estimatedTokensSaved, 'input'))} |\n`;
+    const configured = formatCost(computeCost(unused, 'input'));
+    if (configured) md += `| Historical unused-read volume at configured input rate | ~${configured} |\n`;
   }
   md += '\n';
 
-  if (stats.sessionHistory && stats.sessionHistory.length > 0) {
-    const nonEmpty = stats.sessionHistory.filter(s => s.tokensTotal > 0);
-    if (nonEmpty.length > 0) {
-      md += `## Recent Sessions\n\n`;
-      md += `| Date | Files | Reads | Edits | Waste % |\n|------|-------|-------|-------|---------|\n`;
-      for (const s of nonEmpty.slice(-20)) {
-        const d = new Date(s.date).toLocaleDateString();
-        md += `| ${d} | ${s.filesRead} | ${s.totalReads} | ${s.totalEdits} | ${s.wastePercent}% |\n`;
-      }
-      md += '\n';
-    }
-  }
-
-  if (stats.topWastedFiles && stats.topWastedFiles.length > 0) {
-    md += `## Top Wasted Files\n\n`;
-    md += `| File | Tokens Wasted | Sessions |\n|------|--------------|----------|\n`;
+  if (stats.topWastedFiles && stats.topWastedFiles.length) {
+    md += `## Top Historical Unused-Read Files\n\n`;
+    md += `| File | Estimated historical unused-read volume | Sessions |\n|---|---:|---:|\n`;
     for (const f of stats.topWastedFiles.slice(0, 10)) {
-      md += `| \`${basename(f.fullPath)}\` | ${formatTokens(f.totalTokensWasted)} | ${f.sessions} |\n`;
+      md += `| \`${basename(f.fullPath || f.path || 'unknown')}\` | ~${formatTokens(f.totalTokensWasted || 0)} | ${f.sessions || 0} |\n`;
     }
     md += '\n';
   }
 
-  if (stats.topUsefulFiles && stats.topUsefulFiles.length > 0) {
-    md += `## Top Useful Files\n\n`;
-    md += `| File | Edits | Reads | Sessions |\n|------|-------|-------|----------|\n`;
+  if (stats.topUsefulFiles && stats.topUsefulFiles.length) {
+    md += `## Top Historically Useful Files\n\n`;
+    md += `| File | Edits | Reads | Sessions |\n|---|---:|---:|---:|\n`;
     for (const f of stats.topUsefulFiles.slice(0, 10)) {
-      md += `| \`${basename(f.fullPath)}\` | ${f.totalEdits} | ${f.totalReads} | ${f.sessions} |\n`;
+      md += `| \`${basename(f.fullPath || f.path || 'unknown')}\` | ${f.totalEdits || 0} | ${f.totalReads || 0} | ${f.sessions || 0} |\n`;
     }
     md += '\n';
   }
 
-  md += `## Support Development\n\n`;
-  md += `Saved tokens? Help keep this project alive:\n\n`;
-  md += `- **BTC**: \`${DONATION_ADDRESSES.btc}\`\n`;
-  md += `- **ETH (ERC-20)**: \`${DONATION_ADDRESSES.eth}\`\n`;
-  md += `- **SOL**: \`${DONATION_ADDRESSES.sol}\`\n\n`;
-  md += `---\n*Generated by kimi-context-optimizer (KCO) — context optimization for Kimi Code CLI*\n`;
+  md += `## Interpretation\n\n`;
+  md += `The estimated historical avoidable-read volume is an optimization-opportunity heuristic. `;
+  md += `Use \`/kco\` for the separate runtime counterfactual ledger, which subtracts KCO's model-visible overhead.\n\n`;
+  md += `---\n*Generated by kimi-context-optimizer (KCO) for Kimi Code CLI.*\n`;
 
   const outFile = join(EXPORTS_DIR, `report-${date}.md`);
   writeFileSync(outFile, md);
   console.log(`Exported to: ${outFile}`);
   return outFile;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function exportHTML() {
@@ -95,291 +99,39 @@ function exportHTML() {
     return;
   }
 
+  const { total, unused, pct } = historicalSummary(stats);
   const pricing = getPricing();
   const date = new Date().toISOString().split('T')[0];
-  const overallWaste = stats.totalTokensTracked > 0 ?
-    Math.round((stats.estimatedTokensSaved / stats.totalTokensTracked) * 100) : 0;
+  const configured = pricing.input !== null ? formatCost(computeCost(unused, 'input')) : null;
+  const wastedRows = (stats.topWastedFiles || []).slice(0, 10).map((f) => `
+    <tr><td><code>${escapeHtml(basename(f.fullPath || f.path || 'unknown'))}</code></td><td>~${escapeHtml(formatTokens(f.totalTokensWasted || 0))}</td><td>${f.sessions || 0}</td></tr>`).join('');
+  const usefulRows = (stats.topUsefulFiles || []).slice(0, 10).map((f) => `
+    <tr><td><code>${escapeHtml(basename(f.fullPath || f.path || 'unknown'))}</code></td><td>${f.totalEdits || 0}</td><td>${f.totalReads || 0}</td><td>${f.sessions || 0}</td></tr>`).join('');
 
-  const sessions = (stats.sessionHistory || []).filter(s => s.tokensTotal > 0).slice(-50);
-  const wasteColor = overallWaste > 40 ? '#f85149' : overallWaste > 20 ? '#d29922' : '#3fb950';
-
-  // Prepare chart data
-  const chartLabels = sessions.map(s => new Date(s.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-  const chartWaste = sessions.map(s => s.wastePercent);
-  const chartTokens = sessions.map(s => Math.round(s.tokensTotal / 1000));
-  const chartEdits = sessions.map(s => s.totalEdits);
-
-  // Project breakdown
-  const projectMap = {};
-  for (const s of sessions) {
-    const proj = s.project || 'unknown';
-    if (!projectMap[proj]) projectMap[proj] = { tokens: 0, waste: 0, sessions: 0 };
-    projectMap[proj].tokens += s.tokensTotal;
-    projectMap[proj].waste += s.tokensWasted;
-    projectMap[proj].sessions++;
-  }
-  const projects = Object.entries(projectMap)
-    .sort((a, b) => b[1].tokens - a[1].tokens)
-    .slice(0, 8);
-
-  const totalCostStr = pricing.input !== null ? formatCost(computeCost(stats.totalTokensTracked, 'input')) : null;
-  const wastedCostStr = pricing.input !== null ? formatCost(computeCost(stats.estimatedTokensSaved, 'input')) : null;
-
-  let html = `<!DOCTYPE html>
+  const html = `<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>KCO Context Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"><\/script>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; padding: 1.5rem; }
-  .container { max-width: 1100px; margin: 0 auto; }
-  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
-  h1 { color: #58a6ff; font-size: 1.4rem; }
-  .date { color: #484f58; font-size: 0.8rem; }
-  h2 { color: #8b949e; margin: 2rem 0 1rem; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.08em; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.8rem; margin: 1rem 0; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 1.2rem; transition: border-color 0.2s; }
-  .card:hover { border-color: #58a6ff; }
-  .card .label { color: #8b949e; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
-  .card .value { color: #f0f6fc; font-size: 2rem; font-weight: 700; margin-top: 0.3rem; }
-  .card .sub { color: #8b949e; font-size: 0.75rem; margin-top: 0.2rem; }
-  .card.accent .value { color: ${wasteColor}; }
-  .card.green .value { color: #3fb950; }
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-  @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
-  .chart-box { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 1.2rem; }
-  .chart-box canvas { max-height: 260px; }
-  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; }
-  th { text-align: left; color: #8b949e; font-size: 0.7rem; text-transform: uppercase; padding: 0.5rem 0.4rem; border-bottom: 1px solid #30363d; }
-  td { padding: 0.5rem 0.4rem; border-bottom: 1px solid #21262d; font-size: 0.82rem; }
-  tr:hover { background: #161b22; }
-  .bar { display: inline-block; height: 8px; border-radius: 4px; }
-  .bar-g { background: #3fb950; } .bar-r { background: #f85149; } .bar-y { background: #d29922; }
-  .donate { background: linear-gradient(135deg, #161b22 0%, #1a1f2e 100%); border: 1px solid #30363d; border-radius: 10px; padding: 1.5rem; margin: 2rem 0; }
-  .donate h3 { color: #58a6ff; margin-bottom: 0.8rem; font-size: 1rem; }
-  .donate p { color: #8b949e; font-size: 0.85rem; margin-bottom: 1rem; line-height: 1.5; }
-  .wallet { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 0.6rem 0.8rem; margin: 0.4rem 0; display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; cursor: pointer; transition: border-color 0.2s; }
-  .wallet:hover { border-color: #58a6ff; }
-  .wallet .chain { color: #8b949e; min-width: 40px; }
-  .wallet .addr { color: #c9d1d9; word-break: break-all; }
-  .wallet .copy { color: #58a6ff; font-size: 0.7rem; opacity: 0; transition: opacity 0.2s; }
-  .wallet:hover .copy { opacity: 1; }
-  footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #21262d; color: #484f58; font-size: 0.7rem; display: flex; justify-content: space-between; }
-  footer a { color: #58a6ff; text-decoration: none; }
-</style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:32px;line-height:1.55}main{max-width:960px;margin:auto}.note,.card,table{border:1px solid #30363d;border-radius:10px;background:#161b22}.note{padding:16px;border-left:4px solid #d29922}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:24px 0}.card{padding:18px}.label{color:#8b949e;font-size:12px;text-transform:uppercase}.value{font-size:28px;font-weight:700;margin-top:4px}table{width:100%;border-collapse:collapse;overflow:hidden;margin:12px 0 28px}th,td{padding:10px 12px;border-bottom:1px solid #30363d;text-align:left}th{color:#8b949e;font-size:12px;text-transform:uppercase}tr:last-child td{border-bottom:0}code{color:#79c0ff}small{color:#8b949e}h1{color:#58a6ff}h2{margin-top:32px}</style>
 </head>
-<body>
-<div class="container">
-  <div class="header">
-    <h1>KCO Context Dashboard</h1>
-    <span class="date">Generated ${date}</span>
-  </div>
-
-  <div class="cards">
-    <div class="card">
-      <div class="label">Sessions</div>
-      <div class="value">${stats.totalSessions}</div>
-      <div class="sub">${sessions.length} with data</div>
-    </div>
-    <div class="card">
-      <div class="label">Total Tokens</div>
-      <div class="value">${formatTokens(stats.totalTokensTracked)}</div>
-      <div class="sub">${totalCostStr ? `~${totalCostStr} at configured rate` : 'tracked across all sessions'}</div>
-    </div>
-    <div class="card accent">
-      <div class="label">Waste</div>
-      <div class="value">${overallWaste}%</div>
-      <div class="sub">${formatTokens(stats.estimatedTokensSaved)}${wastedCostStr ? ` / ~${wastedCostStr}` : ''}</div>
-    </div>
-    <div class="card green">
-      <div class="label">Saveable</div>
-      <div class="value">${formatTokens(stats.estimatedTokensSaved)}</div>
-      <div class="sub">tokens with KCO</div>
-    </div>
-    <div class="card">
-      <div class="label">Files Read</div>
-      <div class="value">${stats.totalFilesRead}</div>
-    </div>
-    <div class="card">
-      <div class="label">Files Edited</div>
-      <div class="value">${stats.totalFilesEdited}</div>
-      <div class="sub">${stats.totalFilesRead > 0 ? Math.round((stats.totalFilesEdited / stats.totalFilesRead) * 100) : 0}% edit ratio</div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <div class="chart-box">
-      <h2>Waste Trend</h2>
-      <canvas id="wasteTrend"></canvas>
-    </div>
-    <div class="chart-box">
-      <h2>Token Usage</h2>
-      <canvas id="tokenUsage"></canvas>
-    </div>
-  </div>
-
-  <div class="grid-2" style="margin-top:1.5rem">
-    <div class="chart-box">
-      <h2>Tokens by Project</h2>
-      <canvas id="projectChart"></canvas>
-    </div>
-    <div class="chart-box">
-      <h2>Edits per Session</h2>
-      <canvas id="editChart"></canvas>
-    </div>
-  </div>
-
-  ${stats.topWastedFiles && stats.topWastedFiles.length > 0 ? `
-  <h2>Top Wasted Files</h2>
-  <table>
-    <tr><th>File</th><th>Tokens</th><th>Sessions</th><th>Impact</th></tr>
-    ${stats.topWastedFiles.slice(0, 10).map(f => {
-      const maxW = Math.max(...stats.topWastedFiles.map(x => x.totalTokensWasted));
-      const w = Math.round((f.totalTokensWasted / maxW) * 200);
-      return `<tr><td><code>${basename(f.fullPath)}</code></td><td>${formatTokens(f.totalTokensWasted)}</td><td>${f.sessions}</td><td><span class="bar bar-r" style="width:${w}px"></span></td></tr>`;
-    }).join('\n    ')}
-  </table>` : ''}
-
-  ${stats.topUsefulFiles && stats.topUsefulFiles.length > 0 ? `
-  <h2>Top Useful Files</h2>
-  <table>
-    <tr><th>File</th><th>Edits</th><th>Reads</th><th>Sessions</th><th>Impact</th></tr>
-    ${stats.topUsefulFiles.slice(0, 10).map(f => {
-      const maxU = Math.max(...stats.topUsefulFiles.map(x => x.usefulness));
-      const w = Math.round((f.usefulness / maxU) * 200);
-      return `<tr><td><code>${basename(f.fullPath)}</code></td><td>${f.totalEdits}</td><td>${f.totalReads}</td><td>${f.sessions}</td><td><span class="bar bar-g" style="width:${w}px"></span></td></tr>`;
-    }).join('\n    ')}
-  </table>` : ''}
-
-  <div class="donate">
-    <h3>Saved tokens? Support the project</h3>
-    <p>kimi-context-optimizer is free and open source. If it saved you tokens, consider supporting development with a donation.</p>
-    <div class="wallet" onclick="navigator.clipboard.writeText('${DONATION_ADDRESSES.btc}')">
-      <span class="chain">BTC</span>
-      <span class="addr">${DONATION_ADDRESSES.btc}</span>
-      <span class="copy">click to copy</span>
-    </div>
-    <div class="wallet" onclick="navigator.clipboard.writeText('${DONATION_ADDRESSES.eth}')">
-      <span class="chain">ETH</span>
-      <span class="addr">${DONATION_ADDRESSES.eth}</span>
-      <span class="copy">click to copy</span>
-    </div>
-    <div class="wallet" onclick="navigator.clipboard.writeText('${DONATION_ADDRESSES.sol}')">
-      <span class="chain">SOL</span>
-      <span class="addr">${DONATION_ADDRESSES.sol}</span>
-      <span class="copy">click to copy</span>
-    </div>
-  </div>
-
-  <footer>
-    <span>Generated by kimi-context-optimizer (KCO)</span>
-    <span>for Kimi Code CLI</span>
-  </footer>
+<body><main>
+<h1>KCO Context Dashboard</h1>
+<p><small>Generated ${date}</small></p>
+<div class="note"><strong>Evidence class: ESTIMATED HISTORICAL HEURISTIC.</strong> Estimated historical unused-read volume is not the runtime blocked-read savings ledger and is not a direct measurement of Kimi subscription quota.</div>
+<div class="cards">
+  <div class="card"><div class="label">Sessions</div><div class="value">${stats.totalSessions}</div></div>
+  <div class="card"><div class="label">Tracked token volume</div><div class="value">${escapeHtml(formatTokens(total))}</div></div>
+  <div class="card"><div class="label">Estimated historical unused-read volume</div><div class="value">${escapeHtml(formatTokens(unused))}</div><small>${pct}% of tracked historical volume${configured ? ` · ~${escapeHtml(configured)} at configured input rate` : ''}</small></div></div>
+  <div class="card"><div class="label">Files read / edited</div><div class="value">${stats.totalFilesRead || 0} / ${stats.totalFilesEdited || 0}</div></div>
 </div>
-
-<script>
-Chart.defaults.color = '#8b949e';
-Chart.defaults.borderColor = '#30363d22';
-
-// Waste Trend
-new Chart(document.getElementById('wasteTrend'), {
-  type: 'line',
-  data: {
-    labels: ${JSON.stringify(chartLabels)},
-    datasets: [{
-      label: 'Waste %',
-      data: ${JSON.stringify(chartWaste)},
-      borderColor: '#f85149',
-      backgroundColor: '#f8514920',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 2,
-      pointHoverRadius: 5,
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: { legend: { display: false } },
-    scales: {
-      y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } },
-      x: { ticks: { maxTicksLimit: 8 } }
-    }
-  }
-});
-
-// Token Usage
-new Chart(document.getElementById('tokenUsage'), {
-  type: 'bar',
-  data: {
-    labels: ${JSON.stringify(chartLabels)},
-    datasets: [{
-      label: 'Tokens (K)',
-      data: ${JSON.stringify(chartTokens)},
-      backgroundColor: '#58a6ff40',
-      borderColor: '#58a6ff',
-      borderWidth: 1,
-      borderRadius: 3,
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: { legend: { display: false } },
-    scales: {
-      y: { beginAtZero: true, ticks: { callback: v => v + 'K' } },
-      x: { ticks: { maxTicksLimit: 8 } }
-    }
-  }
-});
-
-// Project Doughnut
-new Chart(document.getElementById('projectChart'), {
-  type: 'doughnut',
-  data: {
-    labels: ${JSON.stringify(projects.map(([name]) => name))},
-    datasets: [{
-      data: ${JSON.stringify(projects.map(([, d]) => Math.round(d.tokens / 1000)))},
-      backgroundColor: ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#79c0ff', '#7ee787', '#ffa657'],
-      borderWidth: 0,
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: {
-      legend: { position: 'right', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } }
-    }
-  }
-});
-
-// Edits per session
-new Chart(document.getElementById('editChart'), {
-  type: 'line',
-  data: {
-    labels: ${JSON.stringify(chartLabels)},
-    datasets: [{
-      label: 'Edits',
-      data: ${JSON.stringify(chartEdits)},
-      borderColor: '#3fb950',
-      backgroundColor: '#3fb95020',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 2,
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: { legend: { display: false } },
-    scales: {
-      y: { beginAtZero: true },
-      x: { ticks: { maxTicksLimit: 8 } }
-    }
-  }
-});
-<\/script>
-</body>
-</html>`;
+${wastedRows ? `<h2>Top Historical Unused-Read Files</h2><table><tr><th>File</th><th>Estimated historical unused-read volume</th><th>Sessions</th></tr>${wastedRows}</table>` : ''}
+${usefulRows ? `<h2>Top Historically Useful Files</h2><table><tr><th>File</th><th>Edits</th><th>Reads</th><th>Sessions</th></tr>${usefulRows}</table>` : ''}
+<h2>Interpretation</h2>
+<p>The estimated historical avoidable-read volume is an optimization-opportunity heuristic. Use <code>/kco</code> for the separate runtime counterfactual ledger, which subtracts KCO's model-visible overhead.</p>
+</main></body></html>`;
 
   const outFile = join(EXPORTS_DIR, `report-${date}.html`);
   writeFileSync(outFile, html);
@@ -389,20 +141,12 @@ new Chart(document.getElementById('editChart'), {
 
 function main() {
   const format = process.argv[2] || 'md';
-
-  switch (format) {
-    case 'md':
-    case 'markdown':
-      exportMarkdown();
-      break;
-    case 'html':
-      exportHTML();
-      break;
-    default:
-      console.log('Usage: kco-export [md|html]');
-  }
+  if (format === 'html') exportHTML();
+  else exportMarkdown();
 }
 
 if (isMainModule(import.meta.url)) {
   try { main(); } catch (e) { console.error(`[kco] export error: ${e.message}`); process.exit(0); }
 }
+
+export { exportMarkdown, exportHTML, historicalSummary };
